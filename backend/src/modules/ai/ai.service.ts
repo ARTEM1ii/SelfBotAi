@@ -37,7 +37,8 @@ export class AiService {
   private readonly aiServiceUrl: string;
 
   constructor(private readonly configService: ConfigService) {
-    this.aiServiceUrl = this.configService.getOrThrow<string>('AI_SERVICE_URL');
+    this.aiServiceUrl =
+      this.configService.get<string>('app.aiServiceUrl') ?? 'http://localhost:8000';
   }
 
   async processFile(payload: ProcessFilePayload): Promise<ProcessFileResponse> {
