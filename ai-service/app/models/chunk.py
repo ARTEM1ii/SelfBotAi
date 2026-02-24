@@ -1,5 +1,5 @@
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import BigInteger, ForeignKey, Integer, Text
+from sqlalchemy import Integer, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 import uuid
@@ -19,14 +19,12 @@ class DocumentChunk(Base):
 
     file_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
-        ForeignKey("files.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
 
     user_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False),
-        ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

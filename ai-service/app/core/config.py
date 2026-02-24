@@ -21,16 +21,20 @@ class Settings(BaseSettings):
     postgres_password: str = "telegramllm_secret"
     postgres_db: str = "telegramllm"
 
-    # OpenAI
+    # LLM Provider (openai or openrouter)
+    llm_provider: str = "openrouter"
     openai_api_key: str = ""
+    openrouter_api_key: str = ""
+    huggingface_api_key: str = ""
     openai_embedding_model: str = "text-embedding-3-small"
-    openai_chat_model: str = "gpt-4o-mini"
+    openai_chat_model: str = "qwen/Qwen3-80B-A3B-Instruct"
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # RAG
     chunk_size: int = 512
     chunk_overlap: int = 64
     top_k_results: int = 5
-    embedding_dimensions: int = 1536
+    embedding_dimensions: int = 384
 
     @property
     def database_url(self) -> str:

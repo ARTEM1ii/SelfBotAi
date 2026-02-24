@@ -30,6 +30,8 @@ services:
       - .env
     environment:
       POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      NODE_ENV: development
     ports:
       - '${BACKEND_PORT}:4000'
     volumes:
@@ -51,6 +53,7 @@ services:
       - .env
     environment:
       POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
     ports:
       - '${AI_SERVICE_PORT}:8000'
     volumes:
@@ -71,10 +74,6 @@ services:
       - .env
     ports:
       - '${FRONTEND_PORT}:3000'
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-      - /app/.next
     networks:
       - telegramllm_network
     depends_on:

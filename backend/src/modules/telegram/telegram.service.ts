@@ -9,6 +9,7 @@ import { Repository } from 'typeorm';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { NewMessage, NewMessageEvent } from 'telegram/events';
+import { Api } from 'telegram';
 import {
   TelegramSession,
   TelegramSessionStatus,
@@ -110,10 +111,14 @@ export class TelegramService {
     const client = this.getClientOrThrow(userId);
 
     try {
+      if (!session.phone) {
+        throw new BadRequestException('Phone number not found');
+      }
+      
       await client.invoke(
-        new (require('telegram/tl').functions.auth.SignIn)({
+        new Api.auth.SignIn({
           phoneNumber: session.phone,
-          phoneCodeHash: session.phoneCodeHash,
+          phoneCodeHash: session.phoneCodeHash!,
           phoneCode: dto.code,
         }),
       );

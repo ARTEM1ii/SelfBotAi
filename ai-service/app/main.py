@@ -14,7 +14,10 @@ from app.models import DocumentChunk  # noqa: F401 — registers model with Base
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    # Startup
+    # Startup - create tables
+    async with engine.begin() as conn:
+        await conn.run_sync(DocumentChunk.metadata.create_all)
+    
     yield
     # Shutdown
     await engine.dispose()

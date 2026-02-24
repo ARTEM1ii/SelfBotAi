@@ -16,6 +16,7 @@ export default function TelegramPage() {
   const [session, setSession] = useState<TelegramSession | null>(null);
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState(0);
+  const [needsPassword, setNeedsPassword] = useState(false);
 
   useEffect(() => {
     api.get<TelegramSession>('/telegram/status')
@@ -59,7 +60,12 @@ export default function TelegramPage() {
   const onVerifyCode = async (values: { code: string }) => {
     const res = await post('/telegram/verify-code', values);
     if (!res) return;
-    if (res.status === 'password_required') { message.info('2FA password required'); setStep(2); return; }
+    if (res.status === 'password_required') { 
+      message.info('2FA password required'); 
+      setNeedsPassword(true);
+      setStep(2); 
+      return; 
+    }
     message.success('Connected!');
     const updated = await api.get<TelegramSession>('/telegram/status');
     setSession(updated.data);
@@ -89,7 +95,6 @@ export default function TelegramPage() {
   };
 
   const isConnected = session?.status === TelegramSessionStatus.ACTIVE;
-  const needsPassword = session?.status === TelegramSessionStatus.AWAITING_PASSWORD;
 
   return (
     <div style={{ maxWidth: 640 }}>
