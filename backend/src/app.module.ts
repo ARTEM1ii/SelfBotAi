@@ -8,6 +8,7 @@ import { jwtConfig } from './config/jwt.config';
 import { UsersModule } from './modules/users/users.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { FilesModule } from './modules/files/files.module';
+import { AiModule } from './modules/ai/ai.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { FilesModule } from './modules/files/files.module';
     UsersModule,
     AuthModule,
     FilesModule,
+    AiModule,
   ],
 })
 export class AppModule {}
