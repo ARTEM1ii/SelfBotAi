@@ -5,6 +5,7 @@ import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 import { appConfig } from './config/app.config';
 import { databaseConfig } from './config/database.config';
 import { jwtConfig } from './config/jwt.config';
+import { UsersModule } from './modules/users/users.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { jwtConfig } from './config/jwt.config';
       useFactory: (configService: ConfigService): TypeOrmModuleOptions =>
         configService.get<TypeOrmModuleOptions>('database') as TypeOrmModuleOptions,
     }),
+    UsersModule,
   ],
 })
 export class AppModule {}
