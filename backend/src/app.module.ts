@@ -6,6 +6,7 @@ import { appConfig } from './config/app.config';
 import { databaseConfig } from './config/database.config';
 import { jwtConfig } from './config/jwt.config';
 import { UsersModule } from './modules/users/users.module';
+import { AuthModule } from './modules/auth/auth.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { UsersModule } from './modules/users/users.module';
         configService.get<TypeOrmModuleOptions>('database') as TypeOrmModuleOptions,
     }),
     UsersModule,
+    AuthModule,
   ],
 })
 export class AppModule {}
