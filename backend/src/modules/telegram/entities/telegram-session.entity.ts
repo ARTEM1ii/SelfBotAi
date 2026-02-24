@@ -29,8 +29,14 @@ export class TelegramSession {
   @JoinColumn({ name: 'userId' })
   user: User;
 
-  @Column()
-  phone: string;
+  @Column({ type: 'int' })
+  apiId: number;
+
+  @Column({ type: 'varchar' })
+  apiHash: string;
+
+  @Column({ nullable: true, type: 'varchar' })
+  phone: string | null;
 
   @Column({
     type: 'enum',

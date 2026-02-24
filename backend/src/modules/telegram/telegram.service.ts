@@ -5,56 +5,87 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { NewMessage, NewMessageEvent } from 'telegram/events';
-import { TelegramSession, TelegramSessionStatus } from './entities/telegram-session.entity';
+import {
+  TelegramSession,
+  TelegramSessionStatus,
+} from './entities/telegram-session.entity';
 import { AiService } from '../ai/ai.service';
-import { SendCodeDto, VerifyCodeDto, VerifyPasswordDto } from './dto/connect-telegram.dto';
+import {
+  SaveCredentialsDto,
+  SendCodeDto,
+  VerifyCodeDto,
+  VerifyPasswordDto,
+} from './dto/connect-telegram.dto';
 
 @Injectable()
 export class TelegramService {
   private readonly logger = new Logger(TelegramService.name);
   private readonly clients = new Map<string, TelegramClient>();
-  private readonly apiId: number;
-  private readonly apiHash: string;
 
   constructor(
     @InjectRepository(TelegramSession)
     private readonly sessionRepository: Repository<TelegramSession>,
     private readonly aiService: AiService,
-    private readonly configService: ConfigService,
-  ) {
-    this.apiId = this.configService.get<number>('app.telegramApiId') ?? 0;
-    this.apiHash = this.configService.get<string>('app.telegramApiHash') ?? '';
+  ) {}
+
+  async saveCredentials(
+    userId: string,
+    dto: SaveCredentialsDto,
+  ): Promise<{ status: string }> {
+    const existing = await this.sessionRepository.findOne({ where: { userId } });
+
+    if (existing) {
+      // Reset session when credentials change
+      const client = this.clients.get(userId);
+      if (client) {
+        await client.disconnect().catch(() => null);
+        this.clients.delete(userId);
+      }
+
+      existing.apiId = dto.apiId;
+      existing.apiHash = dto.apiHash;
+      existing.status = TelegramSessionStatus.PENDING;
+      existing.sessionString = null;
+      existing.phoneCodeHash = null;
+      await this.sessionRepository.save(existing);
+    } else {
+      await this.sessionRepository.save(
+        this.sessionRepository.create({
+          userId,
+          apiId: dto.apiId,
+          apiHash: dto.apiHash,
+          status: TelegramSessionStatus.PENDING,
+        }),
+      );
+    }
+
+    return { status: 'credentials_saved' };
   }
 
   async sendCode(userId: string, dto: SendCodeDto): Promise<{ status: string }> {
-    const existing = await this.sessionRepository.findOne({
-      where: { userId },
-    });
+    const session = await this.getSessionOrThrow(userId);
 
-    const session = existing ?? this.sessionRepository.create({ userId });
     session.phone = dto.phone;
     session.status = TelegramSessionStatus.AWAITING_CODE;
     session.sessionString = null;
     session.phoneCodeHash = null;
-
     await this.sessionRepository.save(session);
 
     const client = new TelegramClient(
       new StringSession(''),
-      this.apiId,
-      this.apiHash,
+      session.apiId,
+      session.apiHash,
       { connectionRetries: 3 },
     );
 
     await client.connect();
 
     const result = await client.sendCode(
-      { apiId: this.apiId, apiHash: this.apiHash },
+      { apiId: session.apiId, apiHash: session.apiHash },
       dto.phone,
     );
 
@@ -66,7 +97,10 @@ export class TelegramService {
     return { status: 'code_sent' };
   }
 
-  async verifyCode(userId: string, dto: VerifyCodeDto): Promise<{ status: string }> {
+  async verifyCode(
+    userId: string,
+    dto: VerifyCodeDto,
+  ): Promise<{ status: string }> {
     const session = await this.getSessionOrThrow(userId);
 
     if (!session.phoneCodeHash) {
@@ -94,25 +128,28 @@ export class TelegramService {
 
       return { status: 'connected' };
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const msg = error instanceof Error ? error.message : String(error);
 
-      if (errorMessage.includes('SESSION_PASSWORD_NEEDED')) {
+      if (msg.includes('SESSION_PASSWORD_NEEDED')) {
         session.status = TelegramSessionStatus.AWAITING_PASSWORD;
         await this.sessionRepository.save(session);
         return { status: 'password_required' };
       }
 
-      throw new BadRequestException(`Failed to verify code: ${errorMessage}`);
+      throw new BadRequestException(`Failed to verify code: ${msg}`);
     }
   }
 
-  async verifyPassword(userId: string, dto: VerifyPasswordDto): Promise<{ status: string }> {
+  async verifyPassword(
+    userId: string,
+    dto: VerifyPasswordDto,
+  ): Promise<{ status: string }> {
     const session = await this.getSessionOrThrow(userId);
     const client = this.getClientOrThrow(userId);
 
     try {
       await client.signInWithPassword(
-        { apiId: this.apiId, apiHash: this.apiHash },
+        { apiId: session.apiId, apiHash: session.apiHash },
         { password: async () => dto.password, onError: async () => true },
       );
 
@@ -125,8 +162,8 @@ export class TelegramService {
 
       return { status: 'connected' };
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      throw new BadRequestException(`Failed to verify password: ${errorMessage}`);
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new BadRequestException(`Failed to verify password: ${msg}`);
     }
   }
 
@@ -135,7 +172,7 @@ export class TelegramService {
     const client = this.clients.get(userId);
 
     if (client) {
-      await client.disconnect();
+      await client.disconnect().catch(() => null);
       this.clients.delete(userId);
     }
 
@@ -166,8 +203,8 @@ export class TelegramService {
       try {
         const client = new TelegramClient(
           new StringSession(session.sessionString),
-          this.apiId,
-          this.apiHash,
+          session.apiId,
+          session.apiHash,
           { connectionRetries: 3 },
         );
 
@@ -177,8 +214,10 @@ export class TelegramService {
 
         this.logger.log(`Restored session for user ${session.userId}`);
       } catch (error) {
-        this.logger.error(`Failed to restore session for user ${session.userId}`, error);
-
+        this.logger.error(
+          `Failed to restore session for user ${session.userId}`,
+          error,
+        );
         await this.sessionRepository.update(session.id, {
           status: TelegramSessionStatus.DISCONNECTED,
         });
@@ -186,7 +225,10 @@ export class TelegramService {
     }
   }
 
-  private async startListening(userId: string, client: TelegramClient): Promise<void> {
+  private async startListening(
+    userId: string,
+    client: TelegramClient,
+  ): Promise<void> {
     client.addEventHandler(
       (event: NewMessageEvent) => this.handleIncomingMessage(userId, event),
       new NewMessage({ incoming: true }),
@@ -210,10 +252,8 @@ export class TelegramService {
 
     try {
       const { reply } = await this.aiService.chat(userId, { message: text });
-
       await message.reply({ message: reply });
-
-      this.logger.log(`Auto-replied to message for user ${userId}`);
+      this.logger.log(`Auto-replied for user ${userId}`);
     } catch (error) {
       this.logger.error(`Failed to auto-reply for user ${userId}`, error);
     }
@@ -223,7 +263,9 @@ export class TelegramService {
     const session = await this.sessionRepository.findOne({ where: { userId } });
 
     if (!session) {
-      throw new NotFoundException('Telegram session not found');
+      throw new NotFoundException(
+        'Telegram credentials not found. Please save your API ID and API Hash first.',
+      );
     }
 
     return session;
@@ -233,7 +275,9 @@ export class TelegramService {
     const client = this.clients.get(userId);
 
     if (!client) {
-      throw new BadRequestException('Telegram client not initialized. Start the connection flow again.');
+      throw new BadRequestException(
+        'Telegram client not initialized. Start the connection flow again.',
+      );
     }
 
     return client;

@@ -1,5 +1,24 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsPhoneNumber, IsString, MinLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsPhoneNumber,
+  IsString,
+  Min,
+  MinLength,
+} from 'class-validator';
+
+export class SaveCredentialsDto {
+  @ApiProperty({ example: 12345678, description: 'Telegram API ID from my.telegram.org' })
+  @IsInt()
+  @Min(1)
+  readonly apiId: number;
+
+  @ApiProperty({ example: 'abc123def456...', description: 'Telegram API Hash from my.telegram.org' })
+  @IsString()
+  @MinLength(10)
+  readonly apiHash: string;
+}
 
 export class SendCodeDto {
   @ApiProperty({ example: '+79001234567' })
@@ -23,5 +42,6 @@ export class VerifyPasswordDto {
 
 export class ToggleAutoReplyDto {
   @ApiProperty({ example: true })
+  @IsBoolean()
   readonly enabled: boolean;
 }

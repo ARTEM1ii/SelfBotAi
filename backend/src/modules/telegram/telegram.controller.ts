@@ -17,6 +17,7 @@ import {
 } from '@nestjs/swagger';
 import { TelegramService } from './telegram.service';
 import {
+  SaveCredentialsDto,
   SendCodeDto,
   ToggleAutoReplyDto,
   VerifyCodeDto,
@@ -33,9 +34,25 @@ import { User } from '../users/entities/user.entity';
 export class TelegramController {
   constructor(private readonly telegramService: TelegramService) {}
 
+  @Post('credentials')
+  @ApiOperation({
+    summary: 'Save Telegram API credentials (step 1)',
+    description: 'User provides their own API ID and API Hash from my.telegram.org',
+  })
+  @ApiResponse({ status: 201, description: 'Credentials saved' })
+  saveCredentials(
+    @Body() dto: SaveCredentialsDto,
+    @CurrentUser() user: User,
+  ): Promise<{ status: string }> {
+    return this.telegramService.saveCredentials(user.id, dto);
+  }
+
   @Post('send-code')
-  @ApiOperation({ summary: 'Start Telegram auth — send SMS code' })
-  @ApiResponse({ status: 201, description: 'Code sent' })
+  @ApiOperation({
+    summary: 'Send SMS verification code (step 2)',
+    description: 'Requires credentials to be saved first',
+  })
+  @ApiResponse({ status: 201, description: 'Code sent to phone' })
   sendCode(
     @Body() dto: SendCodeDto,
     @CurrentUser() user: User,
@@ -44,9 +61,9 @@ export class TelegramController {
   }
 
   @Post('verify-code')
-  @ApiOperation({ summary: 'Verify SMS code' })
-  @ApiResponse({ status: 200 })
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verify SMS code (step 3)' })
+  @ApiResponse({ status: 200, description: 'Connected or password required' })
   verifyCode(
     @Body() dto: VerifyCodeDto,
     @CurrentUser() user: User,
@@ -55,9 +72,9 @@ export class TelegramController {
   }
 
   @Post('verify-password')
-  @ApiOperation({ summary: 'Verify 2FA password' })
-  @ApiResponse({ status: 200 })
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Verify 2FA password (step 4, if required)' })
+  @ApiResponse({ status: 200, description: 'Connected' })
   verifyPassword(
     @Body() dto: VerifyPasswordDto,
     @CurrentUser() user: User,
@@ -72,7 +89,7 @@ export class TelegramController {
   }
 
   @Patch('auto-reply')
-  @ApiOperation({ summary: 'Toggle auto-reply on/off' })
+  @ApiOperation({ summary: 'Toggle AI auto-reply on/off' })
   toggleAutoReply(
     @Body() dto: ToggleAutoReplyDto,
     @CurrentUser() user: User,
