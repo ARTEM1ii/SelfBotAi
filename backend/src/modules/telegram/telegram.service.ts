@@ -14,6 +14,7 @@ import {
   TelegramSession,
   TelegramSessionStatus,
 } from './entities/telegram-session.entity';
+import { TelegramConversation } from './entities/telegram-conversation.entity';
 import { AiService } from '../ai/ai.service';
 import {
   SaveCredentialsDto,
@@ -26,10 +27,13 @@ import {
 export class TelegramService {
   private readonly logger = new Logger(TelegramService.name);
   private readonly clients = new Map<string, TelegramClient>();
+  private readonly maxHistoryMessages = 40;
 
   constructor(
     @InjectRepository(TelegramSession)
     private readonly sessionRepository: Repository<TelegramSession>,
+    @InjectRepository(TelegramConversation)
+    private readonly conversationRepository: Repository<TelegramConversation>,
     private readonly aiService: AiService,
   ) {}
 
@@ -256,12 +260,57 @@ export class TelegramService {
     if (!text || !message.isPrivate) return;
 
     try {
-      const { reply } = await this.aiService.chat(userId, { message: text });
+      const peerId = this.extractPeerId(message);
+
+      // Load history from DB
+      const historyRows = await this.conversationRepository.find({
+        where: { userId, peerId },
+        order: { createdAt: 'ASC' },
+        take: this.maxHistoryMessages,
+      });
+
+      const history = historyRows.map((r) => ({ role: r.role, content: r.content }));
+
+      const { reply } = await this.aiService.chat(userId, {
+        message: text,
+        conversationHistory: history,
+      });
+
+      // Persist both turns to DB
+      await this.conversationRepository.save([
+        this.conversationRepository.create({ userId, peerId, role: 'user', content: text }),
+        this.conversationRepository.create({ userId, peerId, role: 'assistant', content: reply }),
+      ]);
+
+      // Trim old messages to keep at most maxHistoryMessages rows per conversation
+      const totalCount = await this.conversationRepository.count({ where: { userId, peerId } });
+      if (totalCount > this.maxHistoryMessages) {
+        const oldest = await this.conversationRepository.find({
+          where: { userId, peerId },
+          order: { createdAt: 'ASC' },
+          take: totalCount - this.maxHistoryMessages,
+        });
+        await this.conversationRepository.remove(oldest);
+      }
+
       await message.reply({ message: reply });
       this.logger.log(`Auto-replied for user ${userId}`);
     } catch (error) {
       this.logger.error(`Failed to auto-reply for user ${userId}`, error);
     }
+  }
+
+  private extractPeerId(message: any): string {
+    // gramJS exposes senderId as a BigInt — convert to stable string
+    const raw =
+      message?.senderId ??
+      message?.chatId ??
+      message?.peerId?.userId ??
+      message?.peerId?.channelId ??
+      message?.peerId?.chatId ??
+      'unknown';
+
+    return String(raw);
   }
 
   private async getSessionOrThrow(userId: string): Promise<TelegramSession> {

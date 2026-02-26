@@ -107,7 +107,7 @@ export default function TelegramPage() {
       {isConnected && (
         <Alert
           type="success"
-          message="Telegram connected"
+          title="Telegram connected"
           description={`Phone: ${session?.phone ?? '—'}`}
           style={{ marginBottom: 24 }}
           showIcon

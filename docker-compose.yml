@@ -12,77 +12,12 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - telegramllm_network
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
       interval: 10s
       timeout: 5s
       retries: 5
 
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: telegramllm_backend
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      NODE_ENV: development
-    ports:
-      - '${BACKEND_PORT}:4000'
-    volumes:
-      - ./backend:/app
-      - /app/node_modules
-    networks:
-      - telegramllm_network
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  ai-service:
-    build:
-      context: ./ai-service
-      dockerfile: Dockerfile
-    container_name: telegramllm_ai
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-    ports:
-      - '${AI_SERVICE_PORT}:8000'
-    volumes:
-      - ./ai-service:/app
-    networks:
-      - telegramllm_network
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: telegramllm_frontend
-    restart: unless-stopped
-    env_file:
-      - .env
-    ports:
-      - '${FRONTEND_PORT}:3000'
-    networks:
-      - telegramllm_network
-    depends_on:
-      - backend
-
 volumes:
   postgres_data:
     driver: local
-
-networks:
-  telegramllm_network:
-    driver: bridge

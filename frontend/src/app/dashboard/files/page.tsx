@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Button, Card, Table, Tag, Typography, Upload,
   message, Popconfirm, Space,
@@ -34,16 +34,22 @@ export default function FilesPage() {
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchFiles = async () => {
+  const fetchFiles = useCallback(async () => {
     try {
       const { data } = await api.get<UploadedFile[]>('/files');
       setFiles(data);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { fetchFiles(); }, []);
+  useEffect(() => { fetchFiles(); }, [fetchFiles]);
+
+  // Periodically refresh the list while the page is open
+  useEffect(() => {
+    const intervalId = setInterval(fetchFiles, 3000);
+    return () => clearInterval(intervalId);
+  }, [fetchFiles]);
 
   const handleDelete = async (id: string) => {
     await api.delete(`/files/${id}`);

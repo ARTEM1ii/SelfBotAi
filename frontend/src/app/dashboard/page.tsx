@@ -40,7 +40,7 @@ export default function DashboardPage() {
               title="Processed Files"
               value={processedFiles}
               prefix={<RobotOutlined />}
-              valueStyle={{ color: '#52c41a' }}
+              styles={{ content: { color: '#52c41a' } }}
             />
           </Card>
         </Col>
@@ -50,7 +50,7 @@ export default function DashboardPage() {
               title="Telegram"
               value={telegramActive ? 'Connected' : 'Disconnected'}
               prefix={<SendOutlined />}
-              valueStyle={{ color: telegramActive ? '#52c41a' : '#ff4d4f' }}
+              styles={{ content: { color: telegramActive ? '#52c41a' : '#ff4d4f' } }}
             />
           </Card>
         </Col>
