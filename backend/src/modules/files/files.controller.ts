@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
@@ -6,6 +7,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   UploadedFile,
   UseGuards,
@@ -87,6 +89,28 @@ export class FilesController {
     @CurrentUser() user: User,
   ): Promise<File> {
     return this.filesService.findOneByUser(id, user.id);
+  }
+
+  @Get(':id/content')
+  @ApiOperation({ summary: 'Get raw text content of a txt/md file' })
+  @ApiResponse({ status: 200, description: 'File content as plain text' })
+  getContent(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+  ): Promise<string> {
+    return this.filesService.getContent(id, user.id);
+  }
+
+  @Patch(':id/content')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Update raw text content of a txt/md file' })
+  @ApiResponse({ status: 204, description: 'Content saved and re-indexing started' })
+  updateContent(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: User,
+    @Body('content') content: string,
+  ): Promise<void> {
+    return this.filesService.updateContent(id, user.id, content);
   }
 
   @Delete(':id')

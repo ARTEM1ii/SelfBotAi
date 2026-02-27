@@ -46,7 +46,7 @@ export default function LoginPage() {
 
         {error && (
           <Alert
-            message={error}
+            title={error}
             type="error"
             showIcon
             closable

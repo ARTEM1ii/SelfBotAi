@@ -15,6 +15,7 @@ import {
   TelegramSessionStatus,
 } from './entities/telegram-session.entity';
 import { TelegramConversation } from './entities/telegram-conversation.entity';
+import { TelegramPeer } from './entities/telegram-peer.entity';
 import { AiService } from '../ai/ai.service';
 import {
   SaveCredentialsDto,
@@ -34,6 +35,8 @@ export class TelegramService {
     private readonly sessionRepository: Repository<TelegramSession>,
     @InjectRepository(TelegramConversation)
     private readonly conversationRepository: Repository<TelegramConversation>,
+    @InjectRepository(TelegramPeer)
+    private readonly peerRepository: Repository<TelegramPeer>,
     private readonly aiService: AiService,
   ) {}
 
@@ -262,6 +265,18 @@ export class TelegramService {
     try {
       const peerId = this.extractPeerId(message);
 
+      // Upsert peer info
+      const peerName = this.extractPeerName(message);
+      const peerUsername = this.extractPeerUsername(message);
+      await this.upsertPeer(userId, peerId, peerName, peerUsername, text);
+
+      // Check if blocked
+      const peer = await this.peerRepository.findOne({ where: { userId, peerId } });
+      if (peer?.isBlocked) {
+        this.logger.log(`Skipped auto-reply: peer ${peerId} is blocked for user ${userId}`);
+        return;
+      }
+
       // Load history from DB
       const historyRows = await this.conversationRepository.find({
         where: { userId, peerId },
@@ -282,6 +297,9 @@ export class TelegramService {
         this.conversationRepository.create({ userId, peerId, role: 'assistant', content: reply }),
       ]);
 
+      // Update peer last message
+      await this.upsertPeer(userId, peerId, peerName, peerUsername, reply);
+
       // Trim old messages to keep at most maxHistoryMessages rows per conversation
       const totalCount = await this.conversationRepository.count({ where: { userId, peerId } });
       if (totalCount > this.maxHistoryMessages) {
@@ -297,6 +315,86 @@ export class TelegramService {
       this.logger.log(`Auto-replied for user ${userId}`);
     } catch (error) {
       this.logger.error(`Failed to auto-reply for user ${userId}`, error);
+    }
+  }
+
+  async getPeers(userId: string): Promise<TelegramPeer[]> {
+    return this.peerRepository.find({
+      where: { userId },
+      order: { lastMessageAt: 'DESC' },
+    });
+  }
+
+  async getConversation(userId: string, peerId: string): Promise<TelegramConversation[]> {
+    return this.conversationRepository.find({
+      where: { userId, peerId },
+      order: { createdAt: 'ASC' },
+      take: 200,
+    });
+  }
+
+  async clearPeerHistory(userId: string, peerId: string): Promise<void> {
+    await this.conversationRepository.delete({ userId, peerId });
+  }
+
+  async deletePeer(userId: string, peerId: string): Promise<void> {
+    await this.conversationRepository.delete({ userId, peerId });
+    await this.peerRepository.delete({ userId, peerId });
+  }
+
+  async blockPeer(userId: string, peerId: string, isBlocked: boolean): Promise<TelegramPeer> {
+    const peer = await this.peerRepository.findOne({ where: { userId, peerId } });
+    if (!peer) throw new NotFoundException(`Peer ${peerId} not found`);
+    peer.isBlocked = isBlocked;
+    return this.peerRepository.save(peer);
+  }
+
+  private async upsertPeer(
+    userId: string,
+    peerId: string,
+    peerName: string | null,
+    peerUsername: string | null,
+    lastMessage: string,
+  ): Promise<void> {
+    const existing = await this.peerRepository.findOne({ where: { userId, peerId } });
+    const preview = lastMessage.slice(0, 100);
+
+    if (existing) {
+      existing.lastMessageAt = new Date();
+      existing.lastMessagePreview = preview;
+      if (peerName && !existing.peerName) existing.peerName = peerName;
+      if (peerUsername && !existing.peerUsername) existing.peerUsername = peerUsername;
+      await this.peerRepository.save(existing);
+    } else {
+      await this.peerRepository.save(
+        this.peerRepository.create({
+          userId,
+          peerId,
+          peerName,
+          peerUsername,
+          lastMessageAt: new Date(),
+          lastMessagePreview: preview,
+        }),
+      );
+    }
+  }
+
+  private extractPeerName(message: any): string | null {
+    try {
+      const sender = message?.sender;
+      if (!sender) return null;
+      const parts = [sender.firstName, sender.lastName].filter(Boolean);
+      return parts.length > 0 ? parts.join(' ') : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private extractPeerUsername(message: any): string | null {
+    try {
+      return message?.sender?.username ?? null;
+    } catch {
+      return null;
     }
   }
 

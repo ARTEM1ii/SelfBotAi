@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Button, Card, Table, Tag, Typography, Upload,
-  message, Popconfirm, Space,
+  App, Button, Card, Table, Tag, Typography, Upload,
+  Popconfirm, Space, Modal,
 } from 'antd';
 import {
-  UploadOutlined, DeleteOutlined, InboxOutlined,
+  UploadOutlined, DeleteOutlined, InboxOutlined, EditOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadProps } from 'antd';
@@ -31,8 +31,13 @@ function formatBytes(bytes: number): string {
 }
 
 export default function FilesPage() {
+  const { message } = App.useApp();
   const [files, setFiles] = useState<UploadedFile[]>([]);
   const [loading, setLoading] = useState(true);
+  const [editFile, setEditFile] = useState<UploadedFile | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [editLoading, setEditLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const fetchFiles = useCallback(async () => {
     try {
@@ -51,6 +56,35 @@ export default function FilesPage() {
     return () => clearInterval(intervalId);
   }, [fetchFiles]);
 
+  const handleEdit = async (file: UploadedFile) => {
+    setEditFile(file);
+    setEditLoading(true);
+    try {
+      const { data } = await api.get<string>(`/files/${file.id}/content`);
+      setEditContent(data);
+    } catch {
+      message.error('Failed to load file content');
+      setEditFile(null);
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!editFile) return;
+    setSaving(true);
+    try {
+      await api.patch(`/files/${editFile.id}/content`, { content: editContent });
+      message.success('Saved. Re-indexing started...');
+      setEditFile(null);
+      fetchFiles();
+    } catch {
+      message.error('Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleDelete = async (id: string) => {
     await api.delete(`/files/${id}`);
     message.success('File deleted');
@@ -60,7 +94,7 @@ export default function FilesPage() {
   const uploadProps: UploadProps = {
     name: 'file',
     multiple: true,
-    action: `${process.env.NEXT_PUBLIC_API_URL}/api/files/upload`,
+    action: `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000'}/api/files/upload`,
     headers: { Authorization: `Bearer ${getToken()}` },
     accept: '.txt,.pdf,.docx,.md',
     onChange(info) {
@@ -114,16 +148,25 @@ export default function FilesPage() {
     {
       title: '',
       key: 'actions',
-      width: 60,
+      width: 100,
       render: (_: unknown, record: UploadedFile) => (
-        <Popconfirm
-          title="Delete this file?"
-          onConfirm={() => handleDelete(record.id)}
-          okText="Delete"
-          okButtonProps={{ danger: true }}
-        >
-          <Button type="text" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
+        <Space>
+          {(record.fileType === 'txt' || record.fileType === 'md') && (
+            <Button
+              type="text"
+              icon={<EditOutlined />}
+              onClick={() => handleEdit(record)}
+            />
+          )}
+          <Popconfirm
+            title="Delete this file?"
+            onConfirm={() => handleDelete(record.id)}
+            okText="Delete"
+            okButtonProps={{ danger: true }}
+          >
+            <Button type="text" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
       ),
     },
   ];
@@ -131,6 +174,34 @@ export default function FilesPage() {
   return (
     <div>
       <Title level={3} style={{ marginBottom: 24 }}>My Files</Title>
+
+      <Modal
+        title={editFile ? `Edit: ${editFile.originalName}` : ''}
+        open={!!editFile}
+        onCancel={() => setEditFile(null)}
+        onOk={handleSave}
+        okText="Save"
+        confirmLoading={saving}
+        width={720}
+        destroyOnHidden
+      >
+        <textarea
+          value={editContent}
+          onChange={(e) => setEditContent(e.target.value)}
+          disabled={editLoading}
+          style={{
+            width: '100%',
+            height: 420,
+            fontFamily: 'monospace',
+            fontSize: 13,
+            padding: 8,
+            resize: 'vertical',
+            border: '1px solid #d9d9d9',
+            borderRadius: 6,
+            outline: 'none',
+          }}
+        />
+      </Modal>
 
       <Card style={{ marginBottom: 16 }}>
         <Dragger {...uploadProps}>

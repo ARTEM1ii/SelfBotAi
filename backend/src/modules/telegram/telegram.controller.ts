@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Param,
   Patch,
   Post,
   UseGuards,
@@ -102,5 +103,50 @@ export class TelegramController {
   @ApiOperation({ summary: 'Disconnect Telegram session' })
   disconnect(@CurrentUser() user: User): Promise<{ status: string }> {
     return this.telegramService.disconnect(user.id);
+  }
+
+  @Get('peers')
+  @ApiOperation({ summary: 'List all conversation peers (contacts)' })
+  getPeers(@CurrentUser() user: User) {
+    return this.telegramService.getPeers(user.id);
+  }
+
+  @Get('peers/:peerId/messages')
+  @ApiOperation({ summary: 'Get message history with a specific peer' })
+  getConversation(
+    @Param('peerId') peerId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.telegramService.getConversation(user.id, peerId);
+  }
+
+  @Delete('peers/:peerId/messages')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Clear message history with a peer (keep peer)' })
+  clearPeerHistory(
+    @Param('peerId') peerId: string,
+    @CurrentUser() user: User,
+  ): Promise<void> {
+    return this.telegramService.clearPeerHistory(user.id, peerId);
+  }
+
+  @Delete('peers/:peerId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Delete peer and all conversation history' })
+  deletePeer(
+    @Param('peerId') peerId: string,
+    @CurrentUser() user: User,
+  ): Promise<void> {
+    return this.telegramService.deletePeer(user.id, peerId);
+  }
+
+  @Patch('peers/:peerId/block')
+  @ApiOperation({ summary: 'Block or unblock a peer' })
+  blockPeer(
+    @Param('peerId') peerId: string,
+    @Body('isBlocked') isBlocked: boolean,
+    @CurrentUser() user: User,
+  ) {
+    return this.telegramService.blockPeer(user.id, peerId, isBlocked);
   }
 }

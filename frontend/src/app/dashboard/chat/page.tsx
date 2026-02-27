@@ -8,32 +8,30 @@ import { ChatMessage, ChatResponse } from '@/types';
 
 const { Title, Text } = Typography;
 
-const STORAGE_KEY = 'telegramllm_chat_history';
-const MAX_STORED = 100;
-
-function loadHistory(): ChatMessage[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as ChatMessage[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveHistory(messages: ChatMessage[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-MAX_STORED)));
+interface HistoryItem {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
 }
 
 export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Load history from localStorage on mount
+  // Load history from server on mount
   useEffect(() => {
-    setMessages(loadHistory());
+    api.get<HistoryItem[]>('/ai/history')
+      .then(({ data }) => {
+        setMessages(data.map((m) => ({ role: m.role, content: m.content })));
+      })
+      .catch(() => {
+        // silently ignore — server may be unavailable
+      })
+      .finally(() => setHistoryLoading(false));
   }, []);
 
   useEffect(() => {
@@ -47,42 +45,30 @@ export default function ChatPage() {
     setInput('');
     setLoading(true);
 
-    // Build the full history including the new user message
     const userMessage: ChatMessage = { role: 'user', content: text };
-    const updatedMessages = [...messages, userMessage];
-
-    setMessages(updatedMessages);
-    saveHistory(updatedMessages);
+    setMessages((prev) => [...prev, userMessage]);
 
     try {
-      // Send full history (excluding the last user message itself)
-      // so AI has context. We send messages BEFORE the new one as history.
       const { data } = await api.post<ChatResponse>('/ai/chat', {
         message: text,
-        conversationHistory: messages.slice(-20), // last 20 messages as context
       });
 
       const assistantMessage: ChatMessage = { role: 'assistant', content: data.reply };
-      const finalMessages = [...updatedMessages, assistantMessage];
-
-      setMessages(finalMessages);
-      saveHistory(finalMessages);
+      setMessages((prev) => [...prev, assistantMessage]);
     } catch {
       const errorMessage: ChatMessage = {
         role: 'assistant',
         content: 'Sorry, something went wrong. Please try again.',
       };
-      const finalMessages = [...updatedMessages, errorMessage];
-      setMessages(finalMessages);
-      saveHistory(finalMessages);
+      setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setLoading(false);
     }
   };
 
-  const clearHistory = () => {
+  const clearHistory = async () => {
+    await api.delete('/ai/history');
     setMessages([]);
-    localStorage.removeItem(STORAGE_KEY);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -115,14 +101,20 @@ export default function ChatPage() {
         styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', padding: 0 } }}
       >
         <div style={styles.messageList}>
-          {messages.length === 0 && (
+          {historyLoading && (
+            <div style={styles.emptyState}>
+              <Spin size="large" />
+            </div>
+          )}
+
+          {!historyLoading && messages.length === 0 && (
             <div style={styles.emptyState}>
               <RobotOutlined style={{ fontSize: 48, color: '#d9d9d9' }} />
               <Text type="secondary" style={{ marginTop: 12 }}>
                 Ask anything — the AI will answer based on your uploaded files.
               </Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                History is saved between sessions.
+                Chat history is saved on the server across sessions.
               </Text>
             </div>
           )}
@@ -175,14 +167,14 @@ export default function ChatPage() {
             placeholder="Type a message… (Enter to send, Shift+Enter for new line)"
             autoSize={{ minRows: 1, maxRows: 4 }}
             style={{ flex: 1, resize: 'none', borderRadius: 8 }}
-            disabled={loading}
+            disabled={loading || historyLoading}
           />
           <Button
             type="primary"
             icon={<SendOutlined />}
             onClick={sendMessage}
             loading={loading}
-            disabled={!input.trim()}
+            disabled={!input.trim() || historyLoading}
             style={{ marginLeft: 8, height: 40 }}
           />
         </div>
@@ -198,7 +190,7 @@ const styles = {
     padding: '24px',
     display: 'flex',
     flexDirection: 'column' as const,
-    gap: 16,
+    gap: 12,
   },
   emptyState: {
     flex: 1,
@@ -206,8 +198,7 @@ const styles = {
     flexDirection: 'column' as const,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 80,
-    gap: 4,
+    gap: 8,
   },
   messageRow: {
     display: 'flex',
@@ -218,7 +209,7 @@ const styles = {
     width: 32,
     height: 32,
     borderRadius: '50%',
-    background: '#f0f0f0',
+    background: '#f5f5f5',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -227,13 +218,12 @@ const styles = {
   bubble: {
     maxWidth: '70%',
     padding: '10px 14px',
-    boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
   },
   inputArea: {
-    padding: '12px 24px',
+    padding: '16px 24px',
     borderTop: '1px solid #f0f0f0',
     display: 'flex',
     alignItems: 'flex-end',
-    background: '#fff',
   },
-} as const;
+};

@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import {
-  Alert, Button, Card, Form, Input, Steps,
-  Switch, Typography, message, Tag,
+  Alert, App, Button, Card, Form, Input, Steps,
+  Switch, Typography, Tag,
 } from 'antd';
 import { SendOutlined } from '@ant-design/icons';
 import { api } from '@/lib/api';
@@ -13,6 +13,7 @@ import { AxiosError } from 'axios';
 const { Title, Text, Paragraph } = Typography;
 
 export default function TelegramPage() {
+  const { message } = App.useApp();
   const [session, setSession] = useState<TelegramSession | null>(null);
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState(0);

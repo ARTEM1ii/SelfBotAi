@@ -1,6 +1,6 @@
 'use client';
 
-import { ConfigProvider, theme } from 'antd';
+import { App, ConfigProvider, theme } from 'antd';
 import { ReactNode } from 'react';
 
 interface Props {
@@ -19,7 +19,7 @@ export function AntdProvider({ children }: Props) {
         },
       }}
     >
-      {children}
+      <App>{children}</App>
     </ConfigProvider>
   );
 }

@@ -72,6 +72,40 @@ export class FilesService {
     return file;
   }
 
+  async getContent(id: string, userId: string): Promise<string> {
+    const file = await this.findOneByUser(id, userId);
+
+    if (file.fileType !== FileType.TXT && file.fileType !== FileType.MD) {
+      throw new BadRequestException('Editing is only supported for .txt and .md files');
+    }
+
+    if (!fs.existsSync(file.storagePath)) {
+      throw new NotFoundException('File not found on disk');
+    }
+
+    return fs.readFileSync(file.storagePath, 'utf-8');
+  }
+
+  async updateContent(id: string, userId: string, content: string): Promise<void> {
+    const file = await this.findOneByUser(id, userId);
+
+    if (file.fileType !== FileType.TXT && file.fileType !== FileType.MD) {
+      throw new BadRequestException('Editing is only supported for .txt and .md files');
+    }
+
+    fs.writeFileSync(file.storagePath, content, 'utf-8');
+
+    const sizeBytes = Buffer.byteLength(content, 'utf-8');
+    await this.fileRepository.update(id, { size: sizeBytes, status: FileStatus.PENDING });
+
+    // Re-index in background
+    this.triggerProcessing({ ...file, size: sizeBytes, status: FileStatus.PENDING }).catch(
+      (err: unknown) => {
+        this.logger.error(`Re-indexing failed for file ${id}`, err);
+      },
+    );
+  }
+
   async delete(id: string, userId: string): Promise<void> {
     const file = await this.findOneByUser(id, userId);
 
