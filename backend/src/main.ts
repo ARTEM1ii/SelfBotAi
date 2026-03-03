@@ -3,6 +3,16 @@ import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 
+// Prevent gramjs internal TIMEOUT errors from crashing the process
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  if (msg.includes('TIMEOUT')) {
+    console.warn('[gramjs] Suppressed TIMEOUT error:', msg);
+    return;
+  }
+  console.error('Unhandled Rejection:', reason);
+});
+
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
 

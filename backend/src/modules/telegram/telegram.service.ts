@@ -77,6 +77,37 @@ export class TelegramService {
   async sendCode(userId: string, dto: SendCodeDto): Promise<{ status: string }> {
     const session = await this.getSessionOrThrow(userId);
 
+    // Disconnect existing in-memory client
+    const existingClient = this.clients.get(userId);
+    if (existingClient) {
+      try {
+        await existingClient.invoke(new Api.auth.LogOut());
+        this.logger.log(`Logged out in-memory client for user ${userId}`);
+      } catch (e) {
+        this.logger.warn(`Failed to log out in-memory client: ${e}`);
+      }
+      await existingClient.disconnect().catch(() => null);
+      this.clients.delete(userId);
+    }
+
+    // If there's a saved session string, restore it and log out to free the Telegram session
+    if (session.sessionString) {
+      try {
+        const oldClient = new TelegramClient(
+          new StringSession(session.sessionString),
+          session.apiId,
+          session.apiHash,
+          { connectionRetries: 3 },
+        );
+        await oldClient.connect();
+        await oldClient.invoke(new Api.auth.LogOut());
+        await oldClient.disconnect();
+        this.logger.log(`Logged out saved Telegram session for user ${userId}`);
+      } catch (e) {
+        this.logger.warn(`Failed to log out saved session: ${e}`);
+      }
+    }
+
     session.phone = dto.phone;
     session.status = TelegramSessionStatus.AWAITING_CODE;
     session.sessionString = null;
@@ -92,10 +123,26 @@ export class TelegramService {
 
     await client.connect();
 
-    const result = await client.sendCode(
-      { apiId: session.apiId, apiHash: session.apiHash },
-      dto.phone,
-    );
+    let result;
+    try {
+      result = await client.sendCode(
+        { apiId: session.apiId, apiHash: session.apiHash },
+        dto.phone,
+      );
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes('FloodWaitError') || msg.includes('FLOOD')) {
+        const seconds = (error as any).seconds ?? 0;
+        const hours = Math.ceil(seconds / 3600);
+        throw new BadRequestException(
+          `Telegram flood limit: wait ${hours > 0 ? `~${hours} hours` : `${seconds} seconds`} before requesting a new code.`,
+        );
+      }
+      throw new BadRequestException(`Failed to send code: ${msg}`);
+    }
+
+    this.logger.log(`sendCode result for ${dto.phone}: type=${result.constructor?.name}, phoneCodeHash=${result.phoneCodeHash}`);
+    this.logger.log(`sendCode full result: ${JSON.stringify(result, (_, v) => typeof v === 'bigint' ? v.toString() : v)}`);
 
     session.phoneCodeHash = result.phoneCodeHash;
     await this.sessionRepository.save(session);
@@ -103,6 +150,45 @@ export class TelegramService {
     this.clients.set(userId, client);
 
     return { status: 'code_sent' };
+  }
+
+  async resendCode(userId: string): Promise<{ status: string }> {
+    const session = await this.getSessionOrThrow(userId);
+    const client = this.getClientOrThrow(userId);
+
+    if (!session.phone || !session.phoneCodeHash) {
+      throw new BadRequestException('No pending code request. Call send-code first.');
+    }
+
+    let result;
+    try {
+      result = await client.invoke(
+        new Api.auth.ResendCode({
+          phoneNumber: session.phone,
+          phoneCodeHash: session.phoneCodeHash,
+        }),
+      );
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg.includes('FloodWaitError') || msg.includes('FLOOD')) {
+        const seconds = (error as any).seconds ?? 0;
+        const hours = Math.ceil(seconds / 3600);
+        throw new BadRequestException(
+          `Telegram flood limit: wait ${hours > 0 ? `~${hours} hours` : `${seconds} seconds`} before resending code.`,
+        );
+      }
+      throw new BadRequestException(`Failed to resend code: ${msg}`);
+    }
+
+    this.logger.log(`resendCode result: ${JSON.stringify(result, (_, v) => typeof v === 'bigint' ? v.toString() : v)}`);
+
+    // Update phoneCodeHash if it changed
+    if ((result as any).phoneCodeHash) {
+      session.phoneCodeHash = (result as any).phoneCodeHash;
+      await this.sessionRepository.save(session);
+    }
+
+    return { status: 'code_resent' };
   }
 
   async verifyCode(
@@ -184,11 +270,17 @@ export class TelegramService {
     const client = this.clients.get(userId);
 
     if (client) {
+      try {
+        await client.invoke(new Api.auth.LogOut());
+      } catch (e) {
+        this.logger.warn(`Failed to log out from Telegram: ${e}`);
+      }
       await client.disconnect().catch(() => null);
       this.clients.delete(userId);
     }
 
     session.status = TelegramSessionStatus.DISCONNECTED;
+    session.sessionString = null;
     await this.sessionRepository.save(session);
 
     return { status: 'disconnected' };

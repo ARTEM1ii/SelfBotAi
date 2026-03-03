@@ -61,6 +61,17 @@ export class TelegramController {
     return this.telegramService.sendCode(user.id, dto);
   }
 
+  @Post('resend-code')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Resend code via SMS (if first was in-app)',
+    description: 'Call after send-code if code was delivered in-app and you need SMS instead',
+  })
+  @ApiResponse({ status: 200, description: 'Code resent via next available method (SMS)' })
+  resendCode(@CurrentUser() user: User): Promise<{ status: string }> {
+    return this.telegramService.resendCode(user.id);
+  }
+
   @Post('verify-code')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify SMS code (step 3)' })
