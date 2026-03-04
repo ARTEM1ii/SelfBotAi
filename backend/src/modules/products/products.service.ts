@@ -90,6 +90,18 @@ export class ProductsService {
     return saved;
   }
 
+  async deleteImage(id: string): Promise<void> {
+    const product = await this.findOne(id);
+    if (product.imagePath) {
+      const imgPath = path.join(process.cwd(), 'uploads', 'products', product.imagePath);
+      if (fs.existsSync(imgPath)) {
+        fs.unlinkSync(imgPath);
+      }
+      product.imagePath = null;
+      await this.productRepo.save(product);
+    }
+  }
+
   async delete(id: string): Promise<void> {
     const product = await this.findOne(id);
 

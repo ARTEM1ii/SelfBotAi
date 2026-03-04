@@ -390,7 +390,7 @@ export class TelegramService {
           if (client && message.media) {
             const buffer = await client.downloadMedia(message.media, {}) as Buffer;
             if (buffer) {
-              const products = await this.aiService.searchProductByImage(buffer);
+              const products = await this.aiService.searchProductByImage(buffer, 1);
               if (products.length > 0) {
                 productContext = await this.formatProductContext(products, 'photo');
               }
@@ -435,7 +435,7 @@ export class TelegramService {
     searchResults: Array<{ product_id: string; product_name: string; product_description: string | null; similarity: number }>,
     source: 'photo' | 'text',
   ): Promise<string> {
-    // Load full product data from DB to include price, quantity, length
+    // Load full product data from DB to include price, quantity, dimensions
     const productIds = searchResults.map((p) => p.product_id);
     const fullProducts = await this.productsService.findByIds(productIds);
     const productMap = new Map(fullProducts.map((p) => [p.id, p]));
@@ -444,7 +444,18 @@ export class TelegramService {
       const full = productMap.get(sr.product_id);
       const parts = [`${i + 1}. ${sr.product_name}`];
       if (full?.description) parts.push(`   Описание: ${full.description}`);
-      if (full?.length) parts.push(`   Размеры: ${full.length}`);
+      if (full) {
+        const dimParts: string[] = [];
+        if (full.width) dimParts.push(full.width);
+        if (full.height) dimParts.push(full.height);
+        if (full.depth) dimParts.push(full.depth);
+        if (dimParts.length > 0) {
+          parts.push(`   Размеры: ${dimParts.join(' x ')}`);
+        }
+        if (full.weight) {
+          parts.push(`   Вес: ${full.weight}`);
+        }
+      }
       if (full) parts.push(`   Цена: ${Number(full.price).toFixed(2)} ₽`);
       if (full) parts.push(`   В наличии: ${full.quantity} шт.`);
       parts.push(`   Совпадение: ${(sr.similarity * 100).toFixed(0)}%`);

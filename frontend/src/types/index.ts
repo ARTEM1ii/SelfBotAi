@@ -60,7 +60,10 @@ export interface Product {
   id: string;
   name: string;
   description: string | null;
-  length: string | null;
+  width: string | null;
+  height: string | null;
+  depth: string | null;
+  weight: string | null;
   price: number;
   quantity: number;
   imagePath: string | null;

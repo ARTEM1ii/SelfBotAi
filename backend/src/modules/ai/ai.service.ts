@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ChatDto, ChatResponseDto } from './dto/chat.dto';
 import { ChatHistory } from './entities/chat-history.entity';
+import { TelegramConversation } from '../telegram/entities/telegram-conversation.entity';
 
 interface ProcessFilePayload {
   file_id: string;
@@ -53,6 +54,8 @@ export class AiService {
     private readonly configService: ConfigService,
     @InjectRepository(ChatHistory)
     private readonly chatHistoryRepo: Repository<ChatHistory>,
+    @InjectRepository(TelegramConversation)
+    private readonly telegramConversationRepo: Repository<TelegramConversation>,
   ) {
     this.aiServiceUrl =
       this.configService.get<string>('app.aiServiceUrl') ?? 'http://localhost:8000';
@@ -68,6 +71,9 @@ export class AiService {
 
   async clearHistory(userId: string): Promise<void> {
     await this.chatHistoryRepo.delete({ userId });
+    // Also clear Telegram conversation history for this user, so the AI
+    // doesn't use past Telegram chats as context after "Clear history" in UI.
+    await this.telegramConversationRepo.delete({ userId });
   }
 
   async processFile(payload: ProcessFilePayload): Promise<ProcessFileResponse> {
@@ -250,12 +256,15 @@ export class AiService {
     }
   }
 
-  async searchProductByImage(imageBuffer: Buffer): Promise<ProductSearchResult[]> {
+  async searchProductByImage(
+    imageBuffer: Buffer,
+    topK: number = 3,
+  ): Promise<ProductSearchResult[]> {
     try {
       const formData = new FormData();
       const blob = new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' });
       formData.append('image', blob, 'photo.jpg');
-      formData.append('top_k', '3');
+      formData.append('top_k', String(topK));
 
       const response = await fetch(
         `${this.aiServiceUrl}/api/products/search-by-image`,

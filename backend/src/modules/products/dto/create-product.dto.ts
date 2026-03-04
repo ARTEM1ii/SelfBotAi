@@ -12,10 +12,25 @@ export class CreateProductDto {
   @IsString()
   readonly description?: string;
 
-  @ApiPropertyOptional({ example: '12мм x 6м' })
+  @ApiPropertyOptional({ example: '12мм' })
   @IsOptional()
   @IsString()
-  readonly length?: string;
+  readonly width?: string;
+
+  @ApiPropertyOptional({ example: '6мм' })
+  @IsOptional()
+  @IsString()
+  readonly height?: string;
+
+  @ApiPropertyOptional({ example: '6м' })
+  @IsOptional()
+  @IsString()
+  readonly depth?: string;
+
+  @ApiPropertyOptional({ example: '5кг' })
+  @IsOptional()
+  @IsString()
+  readonly weight?: string;
 
   @ApiProperty({ example: 450.0 })
   @Type(() => Number)

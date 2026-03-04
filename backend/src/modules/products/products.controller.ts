@@ -38,13 +38,13 @@ import { Product } from './entities/product.entity';
 const PRODUCTS_UPLOADS_DIR = path.join(process.cwd(), 'uploads', 'products');
 
 @ApiTags('Products')
-@ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
 @Controller('products')
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
   @Post()
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Create a product' })
   @ApiConsumes('multipart/form-data')
   @ApiResponse({ status: 201, description: 'Product created' })
@@ -75,6 +75,8 @@ export class ProductsController {
   }
 
   @Get()
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'List all products' })
   @ApiResponse({ status: 200, description: 'List of products' })
   findAll(): Promise<Product[]> {
@@ -82,6 +84,8 @@ export class ProductsController {
   }
 
   @Get(':id')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Get product by id' })
   @ApiResponse({ status: 200, description: 'Product data' })
   @ApiResponse({ status: 404, description: 'Product not found' })
@@ -90,7 +94,7 @@ export class ProductsController {
   }
 
   @Get(':id/image')
-  @ApiOperation({ summary: 'Serve product image' })
+  @ApiOperation({ summary: 'Serve product image (public)' })
   @ApiResponse({ status: 200, description: 'Image file' })
   @ApiResponse({ status: 404, description: 'Image not found' })
   async getImage(
@@ -113,6 +117,8 @@ export class ProductsController {
   }
 
   @Patch(':id')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Update a product' })
   @ApiConsumes('multipart/form-data')
   @ApiResponse({ status: 200, description: 'Product updated' })
@@ -142,7 +148,20 @@ export class ProductsController {
     return this.productsService.update(id, dto, image);
   }
 
+  @Delete(':id/image')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Delete product image' })
+  @ApiResponse({ status: 204, description: 'Image deleted' })
+  @ApiResponse({ status: 404, description: 'Product not found' })
+  deleteImage(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
+    return this.productsService.deleteImage(id);
+  }
+
   @Delete(':id')
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Delete a product' })
   @ApiResponse({ status: 204, description: 'Product deleted' })

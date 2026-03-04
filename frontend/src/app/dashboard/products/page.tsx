@@ -26,6 +26,7 @@ export default function ProductsPage() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [saving, setSaving] = useState(false);
   const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [existingImageUrl, setExistingImageUrl] = useState<string | null>(null);
   const [form] = Form.useForm();
 
   const fetchProducts = useCallback(async () => {
@@ -43,6 +44,7 @@ export default function ProductsPage() {
     setEditingProduct(null);
     form.resetFields();
     setFileList([]);
+    setExistingImageUrl(null);
     setModalOpen(true);
   };
 
@@ -51,11 +53,19 @@ export default function ProductsPage() {
     form.setFieldsValue({
       name: product.name,
       description: product.description ?? '',
-      length: product.length ?? '',
+      width: product.width ?? '',
+      height: product.height ?? '',
+      depth: product.depth ?? '',
+      weight: product.weight ?? '',
       price: product.price,
       quantity: product.quantity,
     });
     setFileList([]);
+    if (product.imagePath) {
+      setExistingImageUrl(`${API_URL}/api/products/${product.id}/image`);
+    } else {
+      setExistingImageUrl(null);
+    }
     setModalOpen(true);
   };
 
@@ -67,7 +77,10 @@ export default function ProductsPage() {
       const formData = new FormData();
       formData.append('name', values.name);
       if (values.description) formData.append('description', values.description);
-      if (values.length) formData.append('length', values.length);
+      if (values.width) formData.append('width', values.width);
+      if (values.height) formData.append('height', values.height);
+      if (values.depth) formData.append('depth', values.depth);
+      if (values.weight) formData.append('weight', values.weight);
       formData.append('price', String(values.price));
       formData.append('quantity', String(values.quantity));
 
@@ -80,6 +93,14 @@ export default function ProductsPage() {
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
       if (editingProduct) {
+        // If existing image was removed by user
+        if (editingProduct.imagePath && !existingImageUrl && !fileList.length) {
+          await fetch(`${API_URL}/api/products/${editingProduct.id}/image`, {
+            method: 'DELETE',
+            headers,
+          });
+        }
+
         await fetch(`${API_URL}/api/products/${editingProduct.id}`, {
           method: 'PATCH',
           headers,
@@ -155,11 +176,21 @@ export default function ProductsPage() {
       render: (desc: string | null) => desc || '—',
     },
     {
-      title: 'Length',
-      dataIndex: 'length',
-      key: 'length',
-      width: 120,
-      render: (len: string | null) => len || '—',
+      title: 'Dimensions',
+      dataIndex: 'width',
+      key: 'dimensions',
+      width: 160,
+      render: (_: unknown, record: Product) => {
+        const parts = [record.width, record.height, record.depth].filter(Boolean);
+        return parts.length > 0 ? parts.join(' x ') : '—';
+      },
+    },
+    {
+      title: 'Weight',
+      dataIndex: 'weight',
+      key: 'weight',
+      width: 100,
+      render: (w: string | null) => w || '—',
     },
     {
       title: 'Price',
@@ -213,7 +244,7 @@ export default function ProductsPage() {
         okText={editingProduct ? 'Save' : 'Create'}
         confirmLoading={saving}
         width={560}
-        destroyOnHidden
+        forceRender
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
           <Form.Item
@@ -228,9 +259,23 @@ export default function ProductsPage() {
             <Input.TextArea rows={3} placeholder="Product description" />
           </Form.Item>
 
-          <Form.Item name="length" label="Dimensions / Length">
-            <Input placeholder="e.g. 12mm x 6m" />
-          </Form.Item>
+          <Space style={{ width: '100%' }} size="middle">
+            <Form.Item name="width" label="Width" style={{ flex: 1 }}>
+              <Input placeholder="e.g. 12mm" />
+            </Form.Item>
+            <Form.Item name="height" label="Height" style={{ flex: 1 }}>
+              <Input placeholder="e.g. 6mm" />
+            </Form.Item>
+          </Space>
+
+          <Space style={{ width: '100%' }} size="middle">
+            <Form.Item name="depth" label="Length / Depth" style={{ flex: 1 }}>
+              <Input placeholder="e.g. 6m" />
+            </Form.Item>
+            <Form.Item name="weight" label="Weight" style={{ flex: 1 }}>
+              <Input placeholder="e.g. 5kg" />
+            </Form.Item>
+          </Space>
 
           <Space style={{ width: '100%' }} size="middle">
             <Form.Item
@@ -253,21 +298,54 @@ export default function ProductsPage() {
           </Space>
 
           <Form.Item label="Image">
-            <Upload
-              listType="picture-card"
-              fileList={fileList}
-              beforeUpload={() => false}
-              onChange={({ fileList: newFileList }) => setFileList(newFileList.slice(-1))}
-              accept="image/*"
-              maxCount={1}
-            >
-              {fileList.length === 0 && (
-                <div>
-                  <UploadOutlined />
-                  <div style={{ marginTop: 8 }}>Upload</div>
-                </div>
-              )}
-            </Upload>
+            {existingImageUrl && fileList.length === 0 ? (
+              <div style={{ display: 'inline-block', position: 'relative' }}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={existingImageUrl}
+                  alt="Product"
+                  style={{
+                    width: 104,
+                    height: 104,
+                    objectFit: 'cover',
+                    borderRadius: 8,
+                    border: '1px solid #d9d9d9',
+                    display: 'block',
+                  }}
+                />
+                <Button
+                  type="text"
+                  danger
+                  icon={<DeleteOutlined />}
+                  size="small"
+                  style={{
+                    position: 'absolute',
+                    top: -8,
+                    right: -8,
+                    background: '#fff',
+                    borderRadius: '50%',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.15)',
+                  }}
+                  onClick={() => setExistingImageUrl(null)}
+                />
+              </div>
+            ) : (
+              <Upload
+                listType="picture-card"
+                fileList={fileList}
+                beforeUpload={() => false}
+                onChange={({ fileList: newFileList }) => setFileList(newFileList.slice(-1))}
+                accept="image/*"
+                maxCount={1}
+              >
+                {fileList.length === 0 && (
+                  <div>
+                    <UploadOutlined />
+                    <div style={{ marginTop: 8 }}>Upload</div>
+                  </div>
+                )}
+              </Upload>
+            )}
           </Form.Item>
         </Form>
       </Modal>
