@@ -1,0 +1,171 @@
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_session
+from app.services.clip_service import CLIPService
+from app.services.local_embedding import LocalEmbeddingService
+from app.services.product_retrieval import ProductRetrievalService, ProductSearchResult
+
+router = APIRouter()
+
+clip_service = CLIPService()
+local_embedding_service = LocalEmbeddingService()
+
+
+class ProductSearchResponse(BaseModel):
+    product_id: str
+    product_name: str
+    product_description: str | None
+    similarity: float
+
+
+class EmbedResponse(BaseModel):
+    status: str
+    product_id: str
+
+
+class TextSearchRequest(BaseModel):
+    query: str
+    top_k: int = 3
+
+
+@router.post(
+    "/products/embed",
+    response_model=EmbedResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["Products"],
+)
+async def embed_product(
+    product_id: str = Form(...),
+    name: str = Form(...),
+    description: str = Form(""),
+    image: UploadFile | None = File(None),
+    session: AsyncSession = Depends(get_session),
+) -> EmbedResponse:
+    retrieval = ProductRetrievalService(session)
+
+    image_embedding = None
+    if image and image.filename:
+        image_bytes = await image.read()
+        if image_bytes:
+            image_embedding = clip_service.embed_image(image_bytes)
+
+    text_for_embedding = f"{name} {description}".strip()
+    text_embedding = local_embedding_service.embed_text(text_for_embedding)
+
+    await retrieval.store_embeddings(
+        product_id=product_id,
+        name=name,
+        description=description or None,
+        image_embedding=image_embedding,
+        text_embedding=text_embedding,
+    )
+
+    return EmbedResponse(status="ok", product_id=product_id)
+
+
+@router.put(
+    "/products/embed/{product_id}",
+    response_model=EmbedResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["Products"],
+)
+async def update_product_embedding(
+    product_id: str,
+    name: str = Form(...),
+    description: str = Form(""),
+    image: UploadFile | None = File(None),
+    session: AsyncSession = Depends(get_session),
+) -> EmbedResponse:
+    retrieval = ProductRetrievalService(session)
+
+    image_embedding = None
+    if image and image.filename:
+        image_bytes = await image.read()
+        if image_bytes:
+            image_embedding = clip_service.embed_image(image_bytes)
+
+    text_for_embedding = f"{name} {description}".strip()
+    text_embedding = local_embedding_service.embed_text(text_for_embedding)
+
+    await retrieval.store_embeddings(
+        product_id=product_id,
+        name=name,
+        description=description or None,
+        image_embedding=image_embedding,
+        text_embedding=text_embedding,
+    )
+
+    return EmbedResponse(status="ok", product_id=product_id)
+
+
+@router.delete(
+    "/products/embed/{product_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["Products"],
+)
+async def delete_product_embedding(
+    product_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    retrieval = ProductRetrievalService(session)
+    await retrieval.delete_embeddings(product_id)
+
+
+@router.post(
+    "/products/search-by-image",
+    response_model=list[ProductSearchResponse],
+    status_code=status.HTTP_200_OK,
+    tags=["Products"],
+)
+async def search_by_image(
+    image: UploadFile = File(...),
+    top_k: int = Form(3),
+    session: AsyncSession = Depends(get_session),
+) -> list[ProductSearchResponse]:
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty image file",
+        )
+
+    image_embedding = clip_service.embed_image(image_bytes)
+    retrieval = ProductRetrievalService(session)
+    results = await retrieval.search_by_image(image_embedding, top_k=top_k)
+
+    return [
+        ProductSearchResponse(
+            product_id=r.product_id,
+            product_name=r.product_name,
+            product_description=r.product_description,
+            similarity=r.similarity,
+        )
+        for r in results
+    ]
+
+
+@router.post(
+    "/products/search-by-text",
+    response_model=list[ProductSearchResponse],
+    status_code=status.HTTP_200_OK,
+    tags=["Products"],
+)
+async def search_by_text(
+    request: TextSearchRequest,
+    session: AsyncSession = Depends(get_session),
+) -> list[ProductSearchResponse]:
+    text_embedding = local_embedding_service.embed_text(request.query)
+    retrieval = ProductRetrievalService(session)
+    results = await retrieval.search_by_text(text_embedding, top_k=request.top_k)
+
+    return [
+        ProductSearchResponse(
+            product_id=r.product_id,
+            product_name=r.product_name,
+            product_description=r.product_description,
+            similarity=r.similarity,
+        )
+        for r in results
+    ]

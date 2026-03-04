@@ -6,6 +6,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import * as fs from 'fs';
+import * as path from 'path';
 import { ChatDto, ChatResponseDto } from './dto/chat.dto';
 import { ChatHistory } from './entities/chat-history.entity';
 
@@ -27,11 +29,19 @@ interface AiChatPayload {
   user_id: string;
   conversation_history?: Array<{ role: string; content: string }>;
   top_k?: number;
+  product_context?: string;
 }
 
 interface AiChatResponse {
   reply: string;
   sources_count: number;
+}
+
+interface ProductSearchResult {
+  product_id: string;
+  product_name: string;
+  product_description: string | null;
+  similarity: number;
 }
 
 @Injectable()
@@ -123,6 +133,7 @@ export class AiService {
       user_id: userId,
       top_k: dto.topK,
       conversation_history: conversationHistory,
+      product_context: dto.productContext,
     };
 
     try {
@@ -154,6 +165,135 @@ export class AiService {
     } catch (error) {
       this.logger.error('Failed to get chat response from AI service', error);
       throw new ServiceUnavailableException('AI service is unavailable');
+    }
+  }
+
+  async embedProduct(
+    productId: string,
+    name: string,
+    description: string,
+    imagePath?: string,
+  ): Promise<void> {
+    try {
+      const formData = new FormData();
+      formData.append('product_id', productId);
+      formData.append('name', name);
+      formData.append('description', description);
+
+      if (imagePath && fs.existsSync(imagePath)) {
+        const imageBuffer = fs.readFileSync(imagePath);
+        const ext = path.extname(imagePath).slice(1) || 'jpg';
+        const blob = new Blob([imageBuffer], { type: `image/${ext}` });
+        formData.append('image', blob, path.basename(imagePath));
+      }
+
+      const response = await fetch(`${this.aiServiceUrl}/api/products/embed`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        this.logger.error(`Failed to embed product ${productId}: ${error}`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to embed product ${productId}`, error);
+    }
+  }
+
+  async updateProductEmbedding(
+    productId: string,
+    name: string,
+    description: string,
+    imagePath?: string,
+  ): Promise<void> {
+    try {
+      const formData = new FormData();
+      formData.append('name', name);
+      formData.append('description', description);
+
+      if (imagePath && fs.existsSync(imagePath)) {
+        const imageBuffer = fs.readFileSync(imagePath);
+        const ext = path.extname(imagePath).slice(1) || 'jpg';
+        const blob = new Blob([imageBuffer], { type: `image/${ext}` });
+        formData.append('image', blob, path.basename(imagePath));
+      }
+
+      const response = await fetch(
+        `${this.aiServiceUrl}/api/products/embed/${productId}`,
+        { method: 'PUT', body: formData },
+      );
+
+      if (!response.ok) {
+        const error = await response.text();
+        this.logger.error(`Failed to update product embedding ${productId}: ${error}`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to update product embedding ${productId}`, error);
+    }
+  }
+
+  async deleteProductEmbedding(productId: string): Promise<void> {
+    try {
+      const response = await fetch(
+        `${this.aiServiceUrl}/api/products/embed/${productId}`,
+        { method: 'DELETE' },
+      );
+
+      if (!response.ok && response.status !== 404) {
+        this.logger.warn(
+          `Failed to delete product embedding ${productId}: ${response.status}`,
+        );
+      }
+    } catch (error) {
+      this.logger.warn(`Could not delete product embedding ${productId}`, error);
+    }
+  }
+
+  async searchProductByImage(imageBuffer: Buffer): Promise<ProductSearchResult[]> {
+    try {
+      const formData = new FormData();
+      const blob = new Blob([new Uint8Array(imageBuffer)], { type: 'image/jpeg' });
+      formData.append('image', blob, 'photo.jpg');
+      formData.append('top_k', '3');
+
+      const response = await fetch(
+        `${this.aiServiceUrl}/api/products/search-by-image`,
+        { method: 'POST', body: formData },
+      );
+
+      if (!response.ok) {
+        this.logger.error(`Product image search failed: ${response.status}`);
+        return [];
+      }
+
+      return (await response.json()) as ProductSearchResult[];
+    } catch (error) {
+      this.logger.error('Failed to search products by image', error);
+      return [];
+    }
+  }
+
+  async searchProductByText(query: string): Promise<ProductSearchResult[]> {
+    try {
+      const response = await fetch(
+        `${this.aiServiceUrl}/api/products/search-by-text`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, top_k: 3 }),
+        },
+      );
+
+      if (!response.ok) {
+        this.logger.error(`Product text search failed: ${response.status}`);
+        return [];
+      }
+
+      return (await response.json()) as ProductSearchResult[];
+    } catch (error) {
+      this.logger.error('Failed to search products by text', error);
+      return [];
     }
   }
 }

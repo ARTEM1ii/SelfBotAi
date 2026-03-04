@@ -19,6 +19,7 @@ class ChatRequest(BaseModel):
     user_id: str
     conversation_history: list[ConversationMessage] | None = None
     top_k: int | None = None
+    product_context: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -62,6 +63,7 @@ async def chat(
             message=request.message,
             context_chunks=chunks,
             conversation_history=history,
+            product_context=request.product_context,
         )
     except Exception as e:
         raise HTTPException(

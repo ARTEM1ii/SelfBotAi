@@ -17,6 +17,7 @@ import {
 import { TelegramConversation } from './entities/telegram-conversation.entity';
 import { TelegramPeer } from './entities/telegram-peer.entity';
 import { AiService } from '../ai/ai.service';
+import { ProductsService } from '../products/products.service';
 import {
   SaveCredentialsDto,
   SendCodeDto,
@@ -38,6 +39,7 @@ export class TelegramService {
     @InjectRepository(TelegramPeer)
     private readonly peerRepository: Repository<TelegramPeer>,
     private readonly aiService: AiService,
+    private readonly productsService: ProductsService,
   ) {}
 
   async saveCredentials(
@@ -350,17 +352,19 @@ export class TelegramService {
     if (!session?.isAutoReplyEnabled) return;
 
     const message = event.message;
-    const text = message.text;
+    const text = message.text ?? '';
 
-    if (!text || !message.isPrivate) return;
+    if (!message.isPrivate) return;
+
+    // Need either text or photo to proceed
+    const hasPhoto = !!(message.photo || message.media);
+    if (!text && !hasPhoto) return;
 
     try {
       const peerId = this.extractPeerId(message);
-
-      // Upsert peer info
       const peerName = this.extractPeerName(message);
       const peerUsername = this.extractPeerUsername(message);
-      await this.upsertPeer(userId, peerId, peerName, peerUsername, text);
+      await this.upsertPeer(userId, peerId, peerName, peerUsername, text || '[photo]');
 
       // Check if blocked
       const peer = await this.peerRepository.findOne({ where: { userId, peerId } });
@@ -369,45 +373,120 @@ export class TelegramService {
         return;
       }
 
-      // Load history from DB
+      // Load conversation history
       const historyRows = await this.conversationRepository.find({
         where: { userId, peerId },
         order: { createdAt: 'ASC' },
         take: this.maxHistoryMessages,
       });
-
       const history = historyRows.map((r) => ({ role: r.role, content: r.content }));
 
-      const { reply } = await this.aiService.chat(userId, {
-        message: text,
-        conversationHistory: history,
-      });
+      let productContext: string | undefined;
 
-      // Persist both turns to DB
-      await this.conversationRepository.save([
-        this.conversationRepository.create({ userId, peerId, role: 'user', content: text }),
-        this.conversationRepository.create({ userId, peerId, role: 'assistant', content: reply }),
-      ]);
-
-      // Update peer last message
-      await this.upsertPeer(userId, peerId, peerName, peerUsername, reply);
-
-      // Trim old messages to keep at most maxHistoryMessages rows per conversation
-      const totalCount = await this.conversationRepository.count({ where: { userId, peerId } });
-      if (totalCount > this.maxHistoryMessages) {
-        const oldest = await this.conversationRepository.find({
-          where: { userId, peerId },
-          order: { createdAt: 'ASC' },
-          take: totalCount - this.maxHistoryMessages,
-        });
-        await this.conversationRepository.remove(oldest);
+      // Handle photo: search products by image
+      if (hasPhoto) {
+        try {
+          const client = this.clients.get(userId);
+          if (client && message.media) {
+            const buffer = await client.downloadMedia(message.media, {}) as Buffer;
+            if (buffer) {
+              const products = await this.aiService.searchProductByImage(buffer);
+              if (products.length > 0) {
+                productContext = await this.formatProductContext(products, 'photo');
+              }
+            }
+          }
+        } catch (err) {
+          this.logger.warn(`Failed to download/search photo for user ${userId}`, err);
+        }
       }
 
-      await message.reply({ message: reply });
-      this.logger.log(`Auto-replied for user ${userId}`);
+      // Handle text: search products by text if no photo results yet
+      if (text && !productContext) {
+        const products = await this.aiService.searchProductByText(text);
+        if (products.length > 0 && products[0].similarity > 0.3) {
+          productContext = await this.formatProductContext(products, 'text');
+        }
+      }
+
+      // When photo sent: tell LLM what the system found, not "user sent a photo"
+      let userMessage: string;
+      if (text) {
+        userMessage = text;
+      } else if (productContext) {
+        userMessage = 'Клиент отправил фотографию товара.';
+      } else {
+        userMessage = 'Клиент отправил фотографию, но похожих товаров не найдено.';
+      }
+
+      const { reply } = await this.aiService.chat(userId, {
+        message: userMessage,
+        conversationHistory: history,
+        productContext,
+      });
+
+      await this.persistAndReply(userId, peerId, userMessage, reply, peerName, peerUsername, message);
     } catch (error) {
       this.logger.error(`Failed to auto-reply for user ${userId}`, error);
     }
+  }
+
+  private async formatProductContext(
+    searchResults: Array<{ product_id: string; product_name: string; product_description: string | null; similarity: number }>,
+    source: 'photo' | 'text',
+  ): Promise<string> {
+    // Load full product data from DB to include price, quantity, length
+    const productIds = searchResults.map((p) => p.product_id);
+    const fullProducts = await this.productsService.findByIds(productIds);
+    const productMap = new Map(fullProducts.map((p) => [p.id, p]));
+
+    const lines = searchResults.map((sr, i) => {
+      const full = productMap.get(sr.product_id);
+      const parts = [`${i + 1}. ${sr.product_name}`];
+      if (full?.description) parts.push(`   Описание: ${full.description}`);
+      if (full?.length) parts.push(`   Размеры: ${full.length}`);
+      if (full) parts.push(`   Цена: ${Number(full.price).toFixed(2)} ₽`);
+      if (full) parts.push(`   В наличии: ${full.quantity} шт.`);
+      parts.push(`   Совпадение: ${(sr.similarity * 100).toFixed(0)}%`);
+      return parts.join('\n');
+    });
+
+    const header = source === 'photo'
+      ? 'Система распознала товар по фотографии клиента. Вот найденные совпадения из каталога:'
+      : 'Система нашла товары по запросу клиента:';
+
+    return `${header}\n\n${lines.join('\n\n')}`;
+  }
+
+  private async persistAndReply(
+    userId: string,
+    peerId: string,
+    userMessage: string,
+    reply: string,
+    peerName: string | null,
+    peerUsername: string | null,
+    message: any,
+  ): Promise<void> {
+    await this.conversationRepository.save([
+      this.conversationRepository.create({ userId, peerId, role: 'user', content: userMessage }),
+      this.conversationRepository.create({ userId, peerId, role: 'assistant', content: reply }),
+    ]);
+
+    await this.upsertPeer(userId, peerId, peerName, peerUsername, reply);
+
+    // Trim old messages
+    const totalCount = await this.conversationRepository.count({ where: { userId, peerId } });
+    if (totalCount > this.maxHistoryMessages) {
+      const oldest = await this.conversationRepository.find({
+        where: { userId, peerId },
+        order: { createdAt: 'ASC' },
+        take: totalCount - this.maxHistoryMessages,
+      });
+      await this.conversationRepository.remove(oldest);
+    }
+
+    await message.reply({ message: reply });
+    this.logger.log(`Auto-replied for user ${userId}`);
   }
 
   async getPeers(userId: string): Promise<TelegramPeer[]> {

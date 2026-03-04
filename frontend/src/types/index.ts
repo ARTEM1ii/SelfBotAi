@@ -56,6 +56,18 @@ export interface TelegramSession {
   updatedAt: string;
 }
 
+export interface Product {
+  id: string;
+  name: string;
+  description: string | null;
+  length: string | null;
+  price: number;
+  quantity: number;
+  imagePath: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;

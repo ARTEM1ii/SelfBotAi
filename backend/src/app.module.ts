@@ -10,6 +10,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { FilesModule } from './modules/files/files.module';
 import { AiModule } from './modules/ai/ai.module';
 import { TelegramModule } from './modules/telegram/telegram.module';
+import { ProductsModule } from './modules/products/products.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { TelegramModule } from './modules/telegram/telegram.module';
     FilesModule,
     AiModule,
     TelegramModule,
+    ProductsModule,
   ],
 })
 export class AppModule {}

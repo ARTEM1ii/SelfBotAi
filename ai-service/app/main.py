@@ -7,9 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes.health import router as health_router
 from app.api.routes.process import router as process_router
 from app.api.routes.chat import router as chat_router
+from app.api.routes.products import router as products_router
 from app.core.config import settings
 from app.core.database import engine
-from app.models import DocumentChunk  # noqa: F401 — registers model with Base
+from app.models import DocumentChunk, ProductEmbedding  # noqa: F401 — registers models with Base
 
 
 @asynccontextmanager
@@ -43,3 +44,4 @@ app.add_middleware(
 app.include_router(health_router, prefix="/api")
 app.include_router(process_router, prefix="/api")
 app.include_router(chat_router, prefix="/api")
+app.include_router(products_router, prefix="/api")

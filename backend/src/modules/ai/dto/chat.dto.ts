@@ -39,6 +39,11 @@ export class ChatDto {
   @Min(1)
   @Max(20)
   readonly topK?: number;
+
+  @ApiPropertyOptional({ description: 'Product catalog context for sales mode' })
+  @IsOptional()
+  @IsString()
+  readonly productContext?: string;
 }
 
 export class ChatResponseDto {

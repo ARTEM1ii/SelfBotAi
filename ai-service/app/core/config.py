@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     top_k_results: int = 5
     embedding_dimensions: int = 384
 
+    # CLIP
+    clip_model_name: str = "clip-ViT-B-32"
+    clip_embedding_dimensions: int = 512
+    text_embedding_dimensions: int = 384
+
     @property
     def database_url(self) -> str:
         return (

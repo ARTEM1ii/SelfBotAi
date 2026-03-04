@@ -46,13 +46,15 @@ class LLMService:
         message: str,
         context_chunks: list[RetrievedChunk],
         conversation_history: list[dict[str, str]] | None = None,
+        product_context: str | None = None,
     ) -> str:
         interlocutor_facts = self._extract_interlocutor_facts(
             conversation_history, message
         )
         context = self._build_context(context_chunks)
         messages = self._build_messages(
-            message, context, conversation_history, interlocutor_facts
+            message, context, conversation_history, interlocutor_facts,
+            product_context=product_context,
         )
 
         response_text = await self._call_llm(messages)
@@ -103,6 +105,7 @@ class LLMService:
         context: str,
         history: list[dict[str, str]] | None,
         interlocutor_facts: dict[str, str],
+        product_context: str | None = None,
     ) -> list[dict[str, str]]:
         # System prompt: you ARE the owner, responding as them
         system_content = (
@@ -195,6 +198,28 @@ class LLMService:
                     "(they told you this themselves):\n"
                     + "\n".join(fact_lines)
                     + "\nUse their name naturally when talking to them."
+                ),
+            })
+
+        # Product catalog context
+        if product_context:
+            messages.append({
+                "role": "system",
+                "content": (
+                    "IMPORTANT CONTEXT — PRODUCT SEARCH RESULTS:\n"
+                    "You work in a construction materials company. "
+                    "The system has ALREADY identified the products below based on the customer's "
+                    "message or photo. You do NOT need to see the photo yourself — the system "
+                    "has already processed it and found matching products.\n\n"
+                    f"{product_context}\n\n"
+                    "YOUR TASK:\n"
+                    "- Present the found product(s) to the customer naturally\n"
+                    "- Include the name, price, available quantity, and dimensions\n"
+                    "- If a product is out of stock (quantity 0), let them know\n"
+                    "- Be helpful and informative, but keep your conversational style\n"
+                    "- NEVER say you cannot see the photo — the system already handled that\n"
+                    "- You do NOT process orders or change quantities — only inform the customer\n"
+                    "- Respond in the same language as the customer's message"
                 ),
             })
 

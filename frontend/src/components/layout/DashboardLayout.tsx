@@ -20,6 +20,7 @@ import {
   LogoutOutlined,
   UserOutlined,
   TeamOutlined,
+  ShoppingOutlined,
 } from '@ant-design/icons';
 import { authApi, removeToken, getToken } from '@/lib/auth';
 import { User } from '@/types';
@@ -32,6 +33,7 @@ const NAV_ITEMS = [
   { key: '/dashboard/files', icon: <FileOutlined />, label: 'My Files' },
   { key: '/dashboard/chat', icon: <MessageOutlined />, label: 'Chat' },
   { key: '/dashboard/conversations', icon: <TeamOutlined />, label: 'Conversations' },
+  { key: '/dashboard/products', icon: <ShoppingOutlined />, label: 'Products' },
   { key: '/dashboard/telegram', icon: <SendOutlined />, label: 'Telegram' },
 ];
 
