@@ -56,6 +56,13 @@ export interface TelegramSession {
   updatedAt: string;
 }
 
+export interface ProductImage {
+  id: string;
+  filename: string;
+  sortOrder: number;
+  createdAt: string;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -67,6 +74,7 @@ export interface Product {
   price: number;
   quantity: number;
   imagePath: string | null;
+  images: ProductImage[];
   createdAt: string;
   updatedAt: string;
 }

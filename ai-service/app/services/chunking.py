@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import chardet
 import tiktoken
 
 from app.core.config import settings
@@ -62,7 +63,10 @@ class ChunkingService:
         return extractor(path)
 
     def _extract_txt(self, path: Path) -> str:
-        return path.read_text(encoding="utf-8", errors="replace")
+        raw = path.read_bytes()
+        detected = chardet.detect(raw)
+        encoding = detected.get("encoding") or "utf-8"
+        return raw.decode(encoding, errors="replace")
 
     def _extract_pdf(self, path: Path) -> str:
         import PyPDF2

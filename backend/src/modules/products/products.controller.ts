@@ -9,12 +9,13 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Res,
-  UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import {
   ApiBearerAuth,
   ApiConsumes,
@@ -37,6 +38,20 @@ import { Product } from './entities/product.entity';
 
 const PRODUCTS_UPLOADS_DIR = path.join(process.cwd(), 'uploads', 'products');
 
+const multerStorage = diskStorage({
+  destination: (_req, _file, cb) => {
+    if (!fs.existsSync(PRODUCTS_UPLOADS_DIR)) {
+      fs.mkdirSync(PRODUCTS_UPLOADS_DIR, { recursive: true });
+    }
+    cb(null, PRODUCTS_UPLOADS_DIR);
+  },
+  filename: (_req, file, cb) => {
+    const uniqueSuffix = crypto.randomBytes(16).toString('hex');
+    const ext = path.extname(file.originalname);
+    cb(null, `${uniqueSuffix}${ext}`);
+  },
+});
+
 @ApiTags('Products')
 @Controller('products')
 export class ProductsController {
@@ -49,38 +64,26 @@ export class ProductsController {
   @ApiConsumes('multipart/form-data')
   @ApiResponse({ status: 201, description: 'Product created' })
   @UseInterceptors(
-    FileInterceptor('image', {
-      storage: diskStorage({
-        destination: (_req, _file, cb) => {
-          if (!fs.existsSync(PRODUCTS_UPLOADS_DIR)) {
-            fs.mkdirSync(PRODUCTS_UPLOADS_DIR, { recursive: true });
-          }
-          cb(null, PRODUCTS_UPLOADS_DIR);
-        },
-        filename: (_req, file, cb) => {
-          const uniqueSuffix = crypto.randomBytes(16).toString('hex');
-          const ext = path.extname(file.originalname);
-          cb(null, `${uniqueSuffix}${ext}`);
-        },
-      }),
+    FilesInterceptor('images', 10, {
+      storage: multerStorage,
       limits: { fileSize: 10 * 1024 * 1024 },
     }),
   )
   create(
     @Body() dto: CreateProductDto,
     @CurrentUser() user: User,
-    @UploadedFile() image?: Express.Multer.File,
+    @UploadedFiles() images?: Express.Multer.File[],
   ): Promise<Product> {
-    return this.productsService.create(user.id, dto, image);
+    return this.productsService.create(user.id, dto, images);
   }
 
   @Get()
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'List all products' })
+  @ApiOperation({ summary: 'List all products (optional ?search= filter)' })
   @ApiResponse({ status: 200, description: 'List of products' })
-  findAll(): Promise<Product[]> {
-    return this.productsService.findAll();
+  findAll(@Query('search') search?: string): Promise<Product[]> {
+    return this.productsService.findAll(search);
   }
 
   @Get(':id')
@@ -94,20 +97,32 @@ export class ProductsController {
   }
 
   @Get(':id/image')
-  @ApiOperation({ summary: 'Serve product image (public)' })
+  @ApiOperation({ summary: 'Serve product image (public, first image or by imageId query)' })
   @ApiResponse({ status: 200, description: 'Image file' })
   @ApiResponse({ status: 404, description: 'Image not found' })
   async getImage(
     @Param('id', ParseUUIDPipe) id: string,
+    @Query('imageId') imageId: string | undefined,
     @Res() res: Response,
   ): Promise<void> {
     const product = await this.productsService.findOne(id);
-    if (!product.imagePath) {
+
+    let filename: string | null = null;
+
+    if (imageId) {
+      const img = product.images?.find((i) => i.id === imageId);
+      filename = img?.filename ?? null;
+    } else {
+      // First image from images array, fallback to imagePath
+      filename = product.images?.[0]?.filename ?? product.imagePath;
+    }
+
+    if (!filename) {
       res.status(404).json({ message: 'No image for this product' });
       return;
     }
 
-    const filePath = path.join(PRODUCTS_UPLOADS_DIR, product.imagePath);
+    const filePath = path.join(PRODUCTS_UPLOADS_DIR, filename);
     if (!fs.existsSync(filePath)) {
       res.status(404).json({ message: 'Image file not found' });
       return;
@@ -123,40 +138,31 @@ export class ProductsController {
   @ApiConsumes('multipart/form-data')
   @ApiResponse({ status: 200, description: 'Product updated' })
   @UseInterceptors(
-    FileInterceptor('image', {
-      storage: diskStorage({
-        destination: (_req, _file, cb) => {
-          if (!fs.existsSync(PRODUCTS_UPLOADS_DIR)) {
-            fs.mkdirSync(PRODUCTS_UPLOADS_DIR, { recursive: true });
-          }
-          cb(null, PRODUCTS_UPLOADS_DIR);
-        },
-        filename: (_req, file, cb) => {
-          const uniqueSuffix = crypto.randomBytes(16).toString('hex');
-          const ext = path.extname(file.originalname);
-          cb(null, `${uniqueSuffix}${ext}`);
-        },
-      }),
+    FilesInterceptor('images', 10, {
+      storage: multerStorage,
       limits: { fileSize: 10 * 1024 * 1024 },
     }),
   )
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateProductDto,
-    @UploadedFile() image?: Express.Multer.File,
+    @UploadedFiles() images?: Express.Multer.File[],
   ): Promise<Product> {
-    return this.productsService.update(id, dto, image);
+    return this.productsService.update(id, dto, images);
   }
 
   @Delete(':id/image')
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Delete product image' })
-  @ApiResponse({ status: 204, description: 'Image deleted' })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete product image (all or specific by imageId query param)' })
+  @ApiResponse({ status: 200, description: 'Image deleted' })
   @ApiResponse({ status: 404, description: 'Product not found' })
-  deleteImage(@Param('id', ParseUUIDPipe) id: string): Promise<void> {
-    return this.productsService.deleteImage(id);
+  deleteImage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('imageId') imageId?: string,
+  ): Promise<Product> {
+    return this.productsService.deleteImage(id, imageId);
   }
 
   @Delete(':id')

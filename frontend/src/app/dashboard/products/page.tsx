@@ -1,22 +1,27 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   App, Button, Card, Form, Input, InputNumber, Modal,
   Popconfirm, Space, Table, Tag, Typography, Upload, Image,
 } from 'antd';
 import {
-  PlusOutlined, DeleteOutlined, EditOutlined, UploadOutlined,
+  PlusOutlined, DeleteOutlined, EditOutlined, UploadOutlined, SearchOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd';
 import { api } from '@/lib/api';
 import { getToken } from '@/lib/auth';
-import { Product } from '@/types';
+import { Product, ProductImage } from '@/types';
 
 const { Title } = Typography;
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+
+interface ExistingImage {
+  id: string;
+  url: string;
+}
 
 export default function ProductsPage() {
   const { message } = App.useApp();
@@ -26,12 +31,15 @@ export default function ProductsPage() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [saving, setSaving] = useState(false);
   const [fileList, setFileList] = useState<UploadFile[]>([]);
-  const [existingImageUrl, setExistingImageUrl] = useState<string | null>(null);
+  const [existingImages, setExistingImages] = useState<ExistingImage[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [form] = Form.useForm();
+  const searchTimer = useRef<ReturnType<typeof setTimeout>>();
 
-  const fetchProducts = useCallback(async () => {
+  const fetchProducts = useCallback(async (search?: string) => {
     try {
-      const { data } = await api.get<Product[]>('/products');
+      const params = search ? { search } : {};
+      const { data } = await api.get<Product[]>('/products', { params });
       setProducts(data);
     } finally {
       setLoading(false);
@@ -40,11 +48,20 @@ export default function ProductsPage() {
 
   useEffect(() => { fetchProducts(); }, [fetchProducts]);
 
+  const handleSearch = (value: string) => {
+    setSearchQuery(value);
+    clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => {
+      setLoading(true);
+      fetchProducts(value);
+    }, 300);
+  };
+
   const openCreateModal = () => {
     setEditingProduct(null);
     form.resetFields();
     setFileList([]);
-    setExistingImageUrl(null);
+    setExistingImages([]);
     setModalOpen(true);
   };
 
@@ -61,12 +78,42 @@ export default function ProductsPage() {
       quantity: product.quantity,
     });
     setFileList([]);
-    if (product.imagePath) {
-      setExistingImageUrl(`${API_URL}/api/products/${product.id}/image`);
-    } else {
-      setExistingImageUrl(null);
+
+    const imgs: ExistingImage[] = (product.images ?? [])
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((img) => ({
+        id: img.id,
+        url: `${API_URL}/api/products/${product.id}/image?imageId=${img.id}`,
+      }));
+
+    // Fallback: if no images array but imagePath exists
+    if (imgs.length === 0 && product.imagePath) {
+      imgs.push({
+        id: 'legacy',
+        url: `${API_URL}/api/products/${product.id}/image`,
+      });
     }
+
+    setExistingImages(imgs);
     setModalOpen(true);
+  };
+
+  const handleRemoveExistingImage = async (imageId: string) => {
+    if (!editingProduct) return;
+    try {
+      const token = getToken();
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const url = imageId === 'legacy'
+        ? `${API_URL}/api/products/${editingProduct.id}/image`
+        : `${API_URL}/api/products/${editingProduct.id}/image?imageId=${imageId}`;
+
+      await fetch(url, { method: 'DELETE', headers });
+      setExistingImages((prev) => prev.filter((img) => img.id !== imageId));
+    } catch {
+      message.error('Failed to delete image');
+    }
   };
 
   const handleSave = async () => {
@@ -84,8 +131,10 @@ export default function ProductsPage() {
       formData.append('price', String(values.price));
       formData.append('quantity', String(values.quantity));
 
-      if (fileList.length > 0 && fileList[0].originFileObj) {
-        formData.append('image', fileList[0].originFileObj);
+      for (const file of fileList) {
+        if (file.originFileObj) {
+          formData.append('images', file.originFileObj);
+        }
       }
 
       const token = getToken();
@@ -93,14 +142,6 @@ export default function ProductsPage() {
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
       if (editingProduct) {
-        // If existing image was removed by user
-        if (editingProduct.imagePath && !existingImageUrl && !fileList.length) {
-          await fetch(`${API_URL}/api/products/${editingProduct.id}/image`, {
-            method: 'DELETE',
-            headers,
-          });
-        }
-
         await fetch(`${API_URL}/api/products/${editingProduct.id}`, {
           method: 'PATCH',
           headers,
@@ -117,7 +158,7 @@ export default function ProductsPage() {
       }
 
       setModalOpen(false);
-      fetchProducts();
+      fetchProducts(searchQuery);
     } catch (err) {
       if (err && typeof err === 'object' && 'errorFields' in err) return;
       message.error('Failed to save product');
@@ -139,20 +180,55 @@ export default function ProductsPage() {
   const columns: ColumnsType<Product> = [
     {
       title: 'Image',
-      dataIndex: 'imagePath',
+      dataIndex: 'images',
       key: 'image',
-      width: 80,
-      render: (imagePath: string | null, record: Product) =>
-        imagePath ? (
-          <Image
-            src={`${API_URL}/api/products/${record.id}/image`}
-            alt={record.name}
-            width={50}
-            height={50}
-            style={{ objectFit: 'cover', borderRadius: 4 }}
-            fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN88P/BfwAJhAPjM9Ql1QAAAABJRU5ErkJggg=="
-          />
-        ) : (
+      width: 100,
+      render: (_: unknown, record: Product) => {
+        const imgs = record.images ?? [];
+        if (imgs.length > 0) {
+          return (
+            <Image.PreviewGroup
+              items={imgs
+                .sort((a, b) => a.sortOrder - b.sortOrder)
+                .map((img) => `${API_URL}/api/products/${record.id}/image?imageId=${img.id}`)}
+            >
+              <div style={{ position: 'relative', display: 'inline-block' }}>
+                <Image
+                  src={`${API_URL}/api/products/${record.id}/image?imageId=${imgs[0].id}`}
+                  alt={record.name}
+                  width={50}
+                  height={50}
+                  style={{ objectFit: 'cover', borderRadius: 4 }}
+                  fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN88P/BfwAJhAPjM9Ql1QAAAABJRU5ErkJggg=="
+                />
+                {imgs.length > 1 && (
+                  <span style={{
+                    position: 'absolute', top: 0, right: 0,
+                    background: 'rgba(0,0,0,0.6)', color: '#fff',
+                    fontSize: 10, padding: '1px 4px', borderRadius: '0 4px 0 4px',
+                  }}>
+                    +{imgs.length - 1}
+                  </span>
+                )}
+              </div>
+            </Image.PreviewGroup>
+          );
+        }
+
+        if (record.imagePath) {
+          return (
+            <Image
+              src={`${API_URL}/api/products/${record.id}/image`}
+              alt={record.name}
+              width={50}
+              height={50}
+              style={{ objectFit: 'cover', borderRadius: 4 }}
+              fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mN88P/BfwAJhAPjM9Ql1QAAAABJRU5ErkJggg=="
+            />
+          );
+        }
+
+        return (
           <div style={{
             width: 50, height: 50, background: '#f0f0f0',
             borderRadius: 4, display: 'flex', alignItems: 'center',
@@ -160,7 +236,8 @@ export default function ProductsPage() {
           }}>
             No img
           </div>
-        ),
+        );
+      },
     },
     {
       title: 'Name',
@@ -297,64 +374,76 @@ export default function ProductsPage() {
             </Form.Item>
           </Space>
 
-          <Form.Item label="Image">
-            {existingImageUrl && fileList.length === 0 ? (
-              <div style={{ display: 'inline-block', position: 'relative' }}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={existingImageUrl}
-                  alt="Product"
-                  style={{
-                    width: 104,
-                    height: 104,
-                    objectFit: 'cover',
-                    borderRadius: 8,
-                    border: '1px solid #d9d9d9',
-                    display: 'block',
-                  }}
-                />
-                <Button
-                  type="text"
-                  danger
-                  icon={<DeleteOutlined />}
-                  size="small"
-                  style={{
-                    position: 'absolute',
-                    top: -8,
-                    right: -8,
-                    background: '#fff',
-                    borderRadius: '50%',
-                    boxShadow: '0 2px 4px rgba(0,0,0,0.15)',
-                  }}
-                  onClick={() => setExistingImageUrl(null)}
-                />
-              </div>
-            ) : (
-              <Upload
-                listType="picture-card"
-                fileList={fileList}
-                beforeUpload={() => false}
-                onChange={({ fileList: newFileList }) => setFileList(newFileList.slice(-1))}
-                accept="image/*"
-                maxCount={1}
-              >
-                {fileList.length === 0 && (
-                  <div>
-                    <UploadOutlined />
-                    <div style={{ marginTop: 8 }}>Upload</div>
+          <Form.Item label="Images">
+            {/* Show existing images */}
+            {existingImages.length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                {existingImages.map((img) => (
+                  <div key={img.id} style={{ display: 'inline-block', position: 'relative' }}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={img.url}
+                      alt="Product"
+                      style={{
+                        width: 104,
+                        height: 104,
+                        objectFit: 'cover',
+                        borderRadius: 8,
+                        border: '1px solid #d9d9d9',
+                        display: 'block',
+                      }}
+                    />
+                    <Button
+                      type="text"
+                      danger
+                      icon={<DeleteOutlined />}
+                      size="small"
+                      style={{
+                        position: 'absolute',
+                        top: -8,
+                        right: -8,
+                        background: '#fff',
+                        borderRadius: '50%',
+                        boxShadow: '0 2px 4px rgba(0,0,0,0.15)',
+                      }}
+                      onClick={() => handleRemoveExistingImage(img.id)}
+                    />
                   </div>
-                )}
-              </Upload>
+                ))}
+              </div>
             )}
+
+            {/* Upload new images */}
+            <Upload
+              listType="picture-card"
+              fileList={fileList}
+              beforeUpload={() => false}
+              onChange={({ fileList: newFileList }) => setFileList(newFileList)}
+              accept="image/*"
+              multiple
+            >
+              <div>
+                <UploadOutlined />
+                <div style={{ marginTop: 8 }}>Upload</div>
+              </div>
+            </Upload>
           </Form.Item>
         </Form>
       </Modal>
 
       <Card>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-          <Title level={5} style={{ margin: 0 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 12 }}>
+          <Title level={5} style={{ margin: 0, whiteSpace: 'nowrap' }}>
             Product catalog ({products.length})
           </Title>
+          <Input
+            placeholder="Search products..."
+            prefix={<SearchOutlined style={{ color: '#bbb' }} />}
+            allowClear
+            value={searchQuery}
+            onChange={(e) => handleSearch(e.target.value)}
+            style={{ maxWidth: 300 }}
+          />
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
             Add Product
           </Button>

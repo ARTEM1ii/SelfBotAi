@@ -30,6 +30,11 @@ export class TelegramService {
   private readonly logger = new Logger(TelegramService.name);
   private readonly clients = new Map<string, TelegramClient>();
   private readonly maxHistoryMessages = 40;
+  private readonly mediaGroupBuffer = new Map<
+    string,
+    { messages: NewMessageEvent[]; timer: NodeJS.Timeout }
+  >();
+  private readonly mediaGroupDelay = 500;
 
   constructor(
     @InjectRepository(TelegramSession)
@@ -359,6 +364,144 @@ export class TelegramService {
     // Need either text or photo to proceed
     const hasPhoto = !!(message.photo || message.media);
     if (!text && !hasPhoto) return;
+
+    // If message belongs to a media group (album), buffer it
+    const groupedId = (message as any).groupedId;
+    if (groupedId) {
+      const bufferKey = `${userId}:${String(groupedId)}`;
+      const existing = this.mediaGroupBuffer.get(bufferKey);
+
+      if (existing) {
+        existing.messages.push(event);
+        clearTimeout(existing.timer);
+        existing.timer = setTimeout(() => {
+          this.mediaGroupBuffer.delete(bufferKey);
+          this.handleMediaGroup(userId, existing.messages).catch((err) =>
+            this.logger.error(`Failed to handle media group for user ${userId}`, err),
+          );
+        }, this.mediaGroupDelay);
+      } else {
+        const timer = setTimeout(() => {
+          const entry = this.mediaGroupBuffer.get(bufferKey);
+          if (!entry) return;
+          this.mediaGroupBuffer.delete(bufferKey);
+          this.handleMediaGroup(userId, entry.messages).catch((err) =>
+            this.logger.error(`Failed to handle media group for user ${userId}`, err),
+          );
+        }, this.mediaGroupDelay);
+        this.mediaGroupBuffer.set(bufferKey, { messages: [event], timer });
+      }
+      return;
+    }
+
+    // Single message (no grouped ID) — process as before
+    await this.handleSingleMessage(userId, event);
+  }
+
+  private async handleMediaGroup(
+    userId: string,
+    events: NewMessageEvent[],
+  ): Promise<void> {
+    try {
+      const firstMessage = events[0].message;
+      const lastMessage = events[events.length - 1].message;
+      const peerId = this.extractPeerId(firstMessage);
+      const peerName = this.extractPeerName(firstMessage);
+      const peerUsername = this.extractPeerUsername(firstMessage);
+
+      // Caption comes from the first message that has text
+      const caption = events.map((e) => e.message.text).find((t) => !!t) ?? '';
+
+      await this.upsertPeer(userId, peerId, peerName, peerUsername, caption || '[album]');
+
+      // Check if blocked
+      const peer = await this.peerRepository.findOne({ where: { userId, peerId } });
+      if (peer?.isBlocked) {
+        this.logger.log(`Skipped auto-reply: peer ${peerId} is blocked for user ${userId}`);
+        return;
+      }
+
+      // Load conversation history
+      const historyRows = await this.conversationRepository.find({
+        where: { userId, peerId },
+        order: { createdAt: 'ASC' },
+        take: this.maxHistoryMessages,
+      });
+      const history = historyRows.map((r) => ({ role: r.role, content: r.content }));
+
+      // Download all photos and search products for each
+      const client = this.clients.get(userId);
+      const allProducts: Array<{ product_id: string; product_name: string; product_description: string | null; similarity: number }> = [];
+
+      if (client) {
+        for (const event of events) {
+          const msg = event.message;
+          if (!msg.media) continue;
+          try {
+            const buffer = await client.downloadMedia(msg.media, {}) as Buffer;
+            if (buffer) {
+              const products = await this.aiService.searchProductByImage(buffer, 3);
+              allProducts.push(...products);
+            }
+          } catch (err) {
+            this.logger.warn(`Failed to download photo from album for user ${userId}`, err);
+          }
+        }
+      }
+
+      // Deduplicate by product_id, keeping highest similarity
+      const bestByProduct = new Map<string, typeof allProducts[number]>();
+      for (const p of allProducts) {
+        const existing = bestByProduct.get(p.product_id);
+        if (!existing || p.similarity > existing.similarity) {
+          bestByProduct.set(p.product_id, p);
+        }
+      }
+      const mergedProducts = Array.from(bestByProduct.values())
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, 5);
+
+      let productContext: string | undefined;
+      if (mergedProducts.length > 0) {
+        productContext = await this.formatProductContext(mergedProducts, 'photo');
+      }
+
+      // If no photo results, try text search from caption
+      if (caption && !productContext) {
+        const products = await this.aiService.searchProductByText(caption);
+        if (products.length > 0 && products[0].similarity > 0.3) {
+          productContext = await this.formatProductContext(products, 'text');
+        }
+      }
+
+      let userMessage: string;
+      if (caption) {
+        userMessage = caption;
+      } else if (productContext) {
+        userMessage = `Клиент отправил ${events.length} фотографий товара.`;
+      } else {
+        userMessage = `Клиент отправил ${events.length} фотографий, но похожих товаров не найдено.`;
+      }
+
+      const { reply } = await this.aiService.chat(userId, {
+        message: userMessage,
+        conversationHistory: history,
+        productContext,
+      });
+
+      await this.persistAndReply(userId, peerId, userMessage, reply, peerName, peerUsername, lastMessage);
+    } catch (error) {
+      this.logger.error(`Failed to handle media group for user ${userId}`, error);
+    }
+  }
+
+  private async handleSingleMessage(
+    userId: string,
+    event: NewMessageEvent,
+  ): Promise<void> {
+    const message = event.message;
+    const text = message.text ?? '';
+    const hasPhoto = !!(message.photo || message.media);
 
     try {
       const peerId = this.extractPeerId(message);

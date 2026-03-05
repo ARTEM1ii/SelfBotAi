@@ -5,9 +5,11 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   ManyToOne,
+  OneToMany,
   JoinColumn,
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
+import { ProductImage } from './product-image.entity';
 
 @Entity('products')
 export class Product {
@@ -40,6 +42,9 @@ export class Product {
 
   @Column({ nullable: true, type: 'varchar' })
   imagePath: string | null;
+
+  @OneToMany(() => ProductImage, (image) => image.product, { cascade: true, eager: true })
+  images: ProductImage[];
 
   @Column()
   userId: string;
