@@ -51,6 +51,7 @@ services:
       - '${AI_SERVICE_PORT:-8000}:8000'
     volumes:
       - uploads_data:/app/uploads
+      - ${PWD}/backend/uploads:${PWD}/backend/uploads:ro
     depends_on:
       postgres:
         condition: service_healthy
