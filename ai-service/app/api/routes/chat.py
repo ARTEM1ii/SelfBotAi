@@ -1,3 +1,6 @@
+import logging
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,11 +9,13 @@ from app.core.database import get_session
 from app.services.llm import LLMService
 from app.services.retrieval import RetrievalService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
 class ConversationMessage(BaseModel):
-    role: str
+    role: Literal["user", "assistant", "system"]
     content: str
 
 

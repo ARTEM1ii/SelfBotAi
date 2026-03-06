@@ -1,5 +1,6 @@
+import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,16 +13,24 @@ from app.core.config import settings
 from app.core.database import engine
 from app.models import DocumentChunk, ProductEmbedding  # noqa: F401 — registers models with Base
 
+logging.basicConfig(
+    level=logging.DEBUG if settings.debug else logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup - create tables
     async with engine.begin() as conn:
         await conn.run_sync(DocumentChunk.metadata.create_all)
-    
+    logger.info("Database tables initialized")
+
     yield
     # Shutdown
     await engine.dispose()
+    logger.info("Database engine disposed")
 
 
 app = FastAPI(
@@ -36,7 +45,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

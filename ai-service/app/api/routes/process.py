@@ -1,11 +1,15 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
 from app.services.chunking import ChunkingService
-from app.services.embedding import EmbeddingService
+from app.services.local_embedding import LocalEmbeddingService
 from app.services.retrieval import RetrievalService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -23,10 +27,6 @@ class ProcessFileResponse(BaseModel):
     status: str
 
 
-class DeleteFileRequest(BaseModel):
-    file_id: str
-
-
 @router.post(
     "/process",
     response_model=ProcessFileResponse,
@@ -38,7 +38,7 @@ async def process_file(
     session: AsyncSession = Depends(get_session),
 ) -> ProcessFileResponse:
     chunking_service = ChunkingService()
-    embedding_service = EmbeddingService()
+    embedding_service = LocalEmbeddingService()
     retrieval_service = RetrievalService(session)
 
     try:
@@ -63,7 +63,7 @@ async def process_file(
         )
 
     texts = [chunk.content for chunk in chunks]
-    embeddings = await embedding_service.embed_texts(texts)
+    embeddings = embedding_service.embed_texts(texts)
 
     chunks_with_embeddings = [
         (chunk.content, chunk.chunk_index, chunk.token_count, embedding)

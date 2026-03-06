@@ -1,9 +1,14 @@
+import logging
 from dataclasses import dataclass
 
-from sqlalchemy import select, delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
 from app.models.product_embedding import ProductEmbedding
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -18,8 +23,11 @@ class ProductRetrievalService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def search_by_image(
-        self, image_embedding: list[float], top_k: int = 3
+    async def _search_by_embedding(
+        self,
+        embedding_column: InstrumentedAttribute,
+        query_embedding: list[float],
+        top_k: int = 3,
     ) -> list[ProductSearchResult]:
         result = await self._session.execute(
             select(
@@ -27,13 +35,11 @@ class ProductRetrievalService:
                 ProductEmbedding.product_name,
                 ProductEmbedding.product_description,
                 (
-                    1 - ProductEmbedding.image_embedding.cosine_distance(image_embedding)
+                    1 - embedding_column.cosine_distance(query_embedding)
                 ).label("similarity"),
             )
-            .where(ProductEmbedding.image_embedding.is_not(None))
-            .order_by(
-                ProductEmbedding.image_embedding.cosine_distance(image_embedding)
-            )
+            .where(embedding_column.is_not(None))
+            .order_by(embedding_column.cosine_distance(query_embedding))
             .limit(top_k)
         )
         rows = result.fetchall()
@@ -47,34 +53,19 @@ class ProductRetrievalService:
             for row in rows
         ]
 
+    async def search_by_image(
+        self, image_embedding: list[float], top_k: int = 3
+    ) -> list[ProductSearchResult]:
+        return await self._search_by_embedding(
+            ProductEmbedding.image_embedding, image_embedding, top_k
+        )
+
     async def search_by_text(
         self, text_embedding: list[float], top_k: int = 3
     ) -> list[ProductSearchResult]:
-        result = await self._session.execute(
-            select(
-                ProductEmbedding.product_id,
-                ProductEmbedding.product_name,
-                ProductEmbedding.product_description,
-                (
-                    1 - ProductEmbedding.text_embedding.cosine_distance(text_embedding)
-                ).label("similarity"),
-            )
-            .where(ProductEmbedding.text_embedding.is_not(None))
-            .order_by(
-                ProductEmbedding.text_embedding.cosine_distance(text_embedding)
-            )
-            .limit(top_k)
+        return await self._search_by_embedding(
+            ProductEmbedding.text_embedding, text_embedding, top_k
         )
-        rows = result.fetchall()
-        return [
-            ProductSearchResult(
-                product_id=row.product_id,
-                product_name=row.product_name,
-                product_description=row.product_description,
-                similarity=float(row.similarity),
-            )
-            for row in rows
-        ]
 
     async def store_embeddings(
         self,
@@ -138,3 +129,5 @@ class ProductRetrievalService:
             row.product_description = description
             row.text_embedding = text_embedding
             await self._session.commit()
+        else:
+            logger.warning("Product %s not found for text embedding update", product_id)

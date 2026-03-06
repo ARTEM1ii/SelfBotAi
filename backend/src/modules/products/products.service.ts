@@ -193,6 +193,60 @@ export class ProductsService {
     }
   }
 
+  /**
+   * Find alternative products in the same category (first word of name),
+   * excluding given product IDs, sorted by price.
+   */
+  async findAlternatives(
+    referenceProducts: Product[],
+    excludeIds: string[],
+    options?: { maxPrice?: number; minPrice?: number },
+    limit: number = 5,
+  ): Promise<Product[]> {
+    if (referenceProducts.length === 0) return [];
+
+    // Extract categories (first word of product name, lowercased)
+    const categories = [
+      ...new Set(
+        referenceProducts
+          .map((p) => p.name.split(/\s+/)[0]?.toLowerCase())
+          .filter((c): c is string => !!c && c.length >= 3),
+      ),
+    ];
+
+    if (categories.length === 0) return [];
+
+    const qb = this.productRepo
+      .createQueryBuilder('product')
+      .leftJoinAndSelect('product.images', 'images');
+
+    // Match any of the categories by first word
+    const conditions = categories.map((_, i) => `LOWER(product.name) LIKE :cat${i}`);
+    const params: Record<string, string | number> = {};
+    categories.forEach((cat, i) => {
+      params[`cat${i}`] = `${cat}%`;
+    });
+
+    qb.where(`(${conditions.join(' OR ')})`, params);
+
+    if (excludeIds.length > 0) {
+      qb.andWhere('product.id NOT IN (:...excludeIds)', { excludeIds });
+    }
+
+    if (options?.maxPrice !== undefined) {
+      qb.andWhere('product.price < :maxPrice', { maxPrice: options.maxPrice });
+    }
+    if (options?.minPrice !== undefined) {
+      qb.andWhere('product.price > :minPrice', { minPrice: options.minPrice });
+    }
+
+    qb.andWhere('product.quantity > 0');
+    qb.orderBy('product.price', options?.maxPrice ? 'DESC' : 'ASC');
+    qb.take(limit);
+
+    return qb.getMany();
+  }
+
   private async generateEmbeddings(product: Product): Promise<void> {
     const imagePath = product.imagePath
       ? path.join(UPLOADS_DIR, product.imagePath)

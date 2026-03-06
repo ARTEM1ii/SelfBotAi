@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -5,7 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_session
 from app.services.clip_service import CLIPService
 from app.services.local_embedding import LocalEmbeddingService
-from app.services.product_retrieval import ProductRetrievalService, ProductSearchResult
+from app.services.product_retrieval import ProductRetrievalService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -30,19 +34,14 @@ class TextSearchRequest(BaseModel):
     top_k: int = 3
 
 
-@router.post(
-    "/products/embed",
-    response_model=EmbedResponse,
-    status_code=status.HTTP_200_OK,
-    tags=["Products"],
-)
-async def embed_product(
-    product_id: str = Form(...),
-    name: str = Form(...),
-    description: str = Form(""),
-    image: UploadFile | None = File(None),
-    session: AsyncSession = Depends(get_session),
+async def _embed_and_store(
+    product_id: str,
+    name: str,
+    description: str,
+    image: UploadFile | None,
+    session: AsyncSession,
 ) -> EmbedResponse:
+    """Shared logic for creating/updating product embeddings."""
     retrieval = ProductRetrievalService(session)
 
     image_embedding = None
@@ -63,6 +62,22 @@ async def embed_product(
     )
 
     return EmbedResponse(status="ok", product_id=product_id)
+
+
+@router.post(
+    "/products/embed",
+    response_model=EmbedResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["Products"],
+)
+async def embed_product(
+    product_id: str = Form(...),
+    name: str = Form(...),
+    description: str = Form(""),
+    image: UploadFile | None = File(None),
+    session: AsyncSession = Depends(get_session),
+) -> EmbedResponse:
+    return await _embed_and_store(product_id, name, description, image, session)
 
 
 @router.put(
@@ -78,26 +93,7 @@ async def update_product_embedding(
     image: UploadFile | None = File(None),
     session: AsyncSession = Depends(get_session),
 ) -> EmbedResponse:
-    retrieval = ProductRetrievalService(session)
-
-    image_embedding = None
-    if image and image.filename:
-        image_bytes = await image.read()
-        if image_bytes:
-            image_embedding = clip_service.embed_image(image_bytes)
-
-    text_for_embedding = f"{name} {description}".strip()
-    text_embedding = local_embedding_service.embed_text(text_for_embedding)
-
-    await retrieval.store_embeddings(
-        product_id=product_id,
-        name=name,
-        description=description or None,
-        image_embedding=image_embedding,
-        text_embedding=text_embedding,
-    )
-
-    return EmbedResponse(status="ok", product_id=product_id)
+    return await _embed_and_store(product_id, name, description, image, session)
 
 
 @router.delete(

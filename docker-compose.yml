@@ -52,6 +52,7 @@ services:
     volumes:
       - uploads_data:/app/uploads
       - ${PWD}/backend/uploads:${PWD}/backend/uploads:ro
+      - ./ai-service/app:/app/app
     depends_on:
       postgres:
         condition: service_healthy

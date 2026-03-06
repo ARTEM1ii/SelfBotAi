@@ -18,6 +18,9 @@ import { TelegramConversation } from './entities/telegram-conversation.entity';
 import { TelegramPeer } from './entities/telegram-peer.entity';
 import { AiService } from '../ai/ai.service';
 import { ProductsService } from '../products/products.service';
+import { Product } from '../products/entities/product.entity';
+import * as path from 'path';
+import * as fs from 'fs';
 import {
   SaveCredentialsDto,
   SendCodeDto,
@@ -35,6 +38,8 @@ export class TelegramService {
     { messages: NewMessageEvent[]; timer: NodeJS.Timeout }
   >();
   private readonly mediaGroupDelay = 500;
+  /** Last matched products per peer, so "скинь фото" can reference the previous search */
+  private readonly lastMatchedProducts = new Map<string, Product[]>();
 
   constructor(
     @InjectRepository(TelegramSession)
@@ -462,15 +467,20 @@ export class TelegramService {
         .slice(0, 5);
 
       let productContext: string | undefined;
+      let matchedProducts: Product[] = [];
       if (mergedProducts.length > 0) {
-        productContext = await this.formatProductContext(mergedProducts, 'photo');
+        const result = await this.formatProductContext(mergedProducts, 'photo');
+        productContext = result.context;
+        matchedProducts = result.products;
       }
 
       // If no photo results, try text search from caption
       if (caption && !productContext) {
         const products = await this.aiService.searchProductByText(caption);
         if (products.length > 0 && products[0].similarity > 0.3) {
-          productContext = await this.formatProductContext(products, 'text');
+          const result = await this.formatProductContext(products, 'text');
+          productContext = result.context;
+          matchedProducts = result.products;
         }
       }
 
@@ -489,7 +499,7 @@ export class TelegramService {
         productContext,
       });
 
-      await this.persistAndReply(userId, peerId, userMessage, reply, peerName, peerUsername, lastMessage);
+      await this.persistAndReply(userId, peerId, userMessage, reply, peerName, peerUsername, lastMessage, matchedProducts);
     } catch (error) {
       this.logger.error(`Failed to handle media group for user ${userId}`, error);
     }
@@ -525,6 +535,7 @@ export class TelegramService {
       const history = historyRows.map((r) => ({ role: r.role, content: r.content }));
 
       let productContext: string | undefined;
+      let matchedProducts: Product[] = [];
 
       // Handle photo: search products by image
       if (hasPhoto) {
@@ -535,7 +546,9 @@ export class TelegramService {
             if (buffer) {
               const products = await this.aiService.searchProductByImage(buffer, 1);
               if (products.length > 0) {
-                productContext = await this.formatProductContext(products, 'photo');
+                const result = await this.formatProductContext(products, 'photo');
+                productContext = result.context;
+                matchedProducts = result.products;
               }
             }
           }
@@ -544,11 +557,96 @@ export class TelegramService {
         }
       }
 
-      // Handle text: search products by text if no photo results yet
-      if (text && !productContext) {
+      const peerKey = `${userId}:${peerId}`;
+      const isPhotoReq = text ? this.isPhotoRequest(text) : false;
+
+      // Handle text: search products by text if no photo results yet.
+      // Skip text search when the message is just a photo request (e.g. "можно фото")
+      // — in that case reuse the products from the previous turn.
+      if (text && !productContext && !isPhotoReq) {
         const products = await this.aiService.searchProductByText(text);
         if (products.length > 0 && products[0].similarity > 0.3) {
-          productContext = await this.formatProductContext(products, 'text');
+          const result = await this.formatProductContext(products, 'text');
+          productContext = result.context;
+          matchedProducts = result.products;
+        }
+      }
+
+      // For photo requests, use previously matched products for context and photo sending
+      if (isPhotoReq && matchedProducts.length === 0) {
+        const previousProducts = this.lastMatchedProducts.get(peerKey);
+        if (previousProducts && previousProducts.length > 0) {
+          matchedProducts = previousProducts;
+          const result = await this.formatProductContext(
+            previousProducts.map((p) => ({
+              product_id: p.id,
+              product_name: p.name,
+              product_description: p.description ?? null,
+              similarity: 1.0,
+            })),
+            'text',
+          );
+          productContext = result.context;
+        }
+      }
+
+      // If no products found but there are previous products for this peer,
+      // try to find alternatives from the same category
+      if (text && !productContext) {
+        const previousProducts = this.lastMatchedProducts.get(peerKey);
+        if (previousProducts && previousProducts.length > 0) {
+          const excludeIds = previousProducts.map((p) => p.id);
+
+          // Detect price direction from user message
+          const priceOptions: { maxPrice?: number; minPrice?: number } = {};
+          const textLower = text.toLowerCase();
+          const wantsCheaper = /дешевл|подешевл|дёшев|бюджетн|ниже.?цен|по.?дешевле|доступн/.test(textLower);
+          const wantsExpensive = /дорож|подорож|премиум|выше.?цен|по.?дороже|люкс/.test(textLower);
+
+          if (wantsCheaper) {
+            const minPrice = Math.min(...previousProducts.map((p) => Number(p.price)));
+            priceOptions.maxPrice = minPrice;
+          } else if (wantsExpensive) {
+            const maxPrice = Math.max(...previousProducts.map((p) => Number(p.price)));
+            priceOptions.minPrice = maxPrice;
+          }
+
+          const alternatives = await this.productsService.findAlternatives(
+            previousProducts,
+            excludeIds,
+            priceOptions,
+          );
+          const prevNames = previousProducts.map((p) => `${p.name} (${Number(p.price).toFixed(0)} ₽)`).join(', ');
+          if (alternatives.length > 0) {
+            const altLines = alternatives.map((p, i) => {
+              const parts = [`${i + 1}. ${p.name}`];
+              if (p.description) parts.push(`   Описание: ${p.description}`);
+              const dimParts: string[] = [];
+              if (p.width) dimParts.push(p.width);
+              if (p.height) dimParts.push(p.height);
+              if (p.depth) dimParts.push(p.depth);
+              if (dimParts.length > 0) parts.push(`   Размеры: ${dimParts.join(' x ')}`);
+              if (p.weight) parts.push(`   Вес: ${p.weight}`);
+              parts.push(`   Цена: ${Number(p.price).toFixed(2)} ₽`);
+              parts.push(`   В наличии: ${p.quantity} шт.`);
+              return parts.join('\n');
+            });
+            productContext =
+              `Клиент ранее интересовался: ${prevNames}.\n` +
+              `Система нашла альтернативные товары из той же категории:\n\n${altLines.join('\n\n')}`;
+            matchedProducts = alternatives;
+          } else if (wantsCheaper) {
+            // No cheaper alternatives found — tell LLM explicitly
+            productContext =
+              `Клиент ранее интересовался: ${prevNames}.\n` +
+              `Клиент просит дешевле, но система проверила каталог и НЕ нашла товаров дешевле в этой категории. ` +
+              `Честно сообщи что дешевле вариантов нет.`;
+          } else if (wantsExpensive) {
+            productContext =
+              `Клиент ранее интересовался: ${prevNames}.\n` +
+              `Клиент просит дороже, но система проверила каталог и НЕ нашла товаров дороже в этой категории. ` +
+              `Честно сообщи что дороже вариантов нет.`;
+          }
         }
       }
 
@@ -568,7 +666,7 @@ export class TelegramService {
         productContext,
       });
 
-      await this.persistAndReply(userId, peerId, userMessage, reply, peerName, peerUsername, message);
+      await this.persistAndReply(userId, peerId, userMessage, reply, peerName, peerUsername, message, matchedProducts);
     } catch (error) {
       this.logger.error(`Failed to auto-reply for user ${userId}`, error);
     }
@@ -577,7 +675,7 @@ export class TelegramService {
   private async formatProductContext(
     searchResults: Array<{ product_id: string; product_name: string; product_description: string | null; similarity: number }>,
     source: 'photo' | 'text',
-  ): Promise<string> {
+  ): Promise<{ context: string; products: Product[] }> {
     // Load full product data from DB to include price, quantity, dimensions
     const productIds = searchResults.map((p) => p.product_id);
     const fullProducts = await this.productsService.findByIds(productIds);
@@ -609,8 +707,13 @@ export class TelegramService {
       ? 'Система распознала товар по фотографии клиента. Вот найденные совпадения из каталога:'
       : 'Система нашла товары по запросу клиента:';
 
-    return `${header}\n\n${lines.join('\n\n')}`;
+    return {
+      context: `${header}\n\n${lines.join('\n\n')}`,
+      products: fullProducts,
+    };
   }
+
+  private readonly maxProductPhotos = 5;
 
   private async persistAndReply(
     userId: string,
@@ -620,6 +723,7 @@ export class TelegramService {
     peerName: string | null,
     peerUsername: string | null,
     message: any,
+    matchedProducts?: Product[],
   ): Promise<void> {
     await this.conversationRepository.save([
       this.conversationRepository.create({ userId, peerId, role: 'user', content: userMessage }),
@@ -641,6 +745,138 @@ export class TelegramService {
 
     await message.reply({ message: reply });
     this.logger.log(`Auto-replied for user ${userId}`);
+
+    const peerKey = `${userId}:${peerId}`;
+
+    // Remember matched products for this peer (so follow-up "скинь фото" works)
+    // Only update when the user message is NOT just a photo request (e.g. "фото", "скинь фото")
+    if (matchedProducts && matchedProducts.length > 0 && !this.isPhotoRequest(userMessage)) {
+      this.lastMatchedProducts.set(peerKey, matchedProducts);
+    }
+
+    // Send product photos only when the client asked for photos
+    if (this.isPhotoRequest(userMessage)) {
+      // Use current matched products first, fall back to last known products for this peer
+      const products = (matchedProducts && matchedProducts.length > 0)
+        ? matchedProducts
+        : this.lastMatchedProducts.get(peerKey);
+
+      // If there are few products (1-2), send them directly without filtering
+      // (filtering by LLM reply words can incorrectly exclude the right product)
+      const relevantProducts = (products && products.length <= 2)
+        ? products
+        : this.filterRelevantProducts(userMessage, reply, products);
+      await this.sendProductPhotos(userId, message, relevantProducts ?? []);
+    }
+  }
+
+  private readonly photoRequestPattern = /фото|фотк|фоточк|картинк|изображен|покажи|скинь|скиньте|покажите|пришли|прислать|прислите|показать|выглядит|выглядят|как смотрится/i;
+
+  private isPhotoRequest(text: string): boolean {
+    return this.photoRequestPattern.test(text);
+  }
+
+  /**
+   * Check if a word from text matches a reference word by shared stem (first N chars).
+   */
+  private stemMatch(word: string, reference: string): boolean {
+    const minLen = Math.min(word.length, reference.length, 4);
+    if (minLen < 3) return false;
+    return word.substring(0, minLen) === reference.substring(0, minLen);
+  }
+
+  private filterRelevantProducts(
+    userMessage: string,
+    reply: string,
+    products?: Product[],
+  ): Product[] {
+    if (!products || products.length === 0) return [];
+
+    const replyLower = reply.toLowerCase();
+    const replyWords = replyLower.split(/[\s,."!?()—–\-:;]+/).filter((w) => w.length >= 3);
+
+    // Score each product by how many name-words appear in the LLM reply (stem match)
+    const scored = products.map((p) => {
+      const nameWords = p.name.toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
+      const matchCount = nameWords.filter((nw) =>
+        replyWords.some((rw) => this.stemMatch(rw, nw)),
+      ).length;
+      return { product: p, score: matchCount, total: nameWords.length };
+    });
+
+    // Keep products where more than half of name-words matched
+    const wellMatched = scored.filter((s) =>
+      s.total > 0 && s.score / s.total > 0.5,
+    );
+    if (wellMatched.length > 0) {
+      return wellMatched
+        .sort((a, b) => (b.score / b.total) - (a.score / a.total))
+        .map((s) => s.product);
+    }
+
+    // Fallback: match by category (first word) in reply
+    const byCategory = scored.filter((s) => {
+      const category = s.product.name.toLowerCase().split(/\s+/)[0];
+      if (!category || category.length < 3) return false;
+      return replyWords.some((rw) => this.stemMatch(rw, category));
+    });
+    if (byCategory.length > 0) return byCategory.map((s) => s.product);
+
+    // If only one product — safe to return it
+    if (products.length === 1) return products;
+
+    // Multiple products and no match — don't send all
+    return [];
+  }
+
+  private async sendProductPhotos(
+    userId: string,
+    message: any,
+    products: Product[],
+  ): Promise<void> {
+    if (products.length === 0) return;
+
+    const client = this.clients.get(userId);
+    if (!client) return;
+
+    const uploadsDir = path.resolve(__dirname, '..', '..', '..', 'uploads', 'products');
+    let sentCount = 0;
+
+    for (const product of products) {
+      if (sentCount >= this.maxProductPhotos) break;
+
+      // Get first image: prefer images[] array, fallback to imagePath
+      let filename: string | null = null;
+      if (product.images && product.images.length > 0) {
+        const sorted = [...product.images].sort((a, b) => a.sortOrder - b.sortOrder);
+        filename = sorted[0].filename;
+      } else if (product.imagePath) {
+        filename = product.imagePath;
+      }
+
+      if (!filename) continue;
+
+      const filePath = path.join(uploadsDir, filename);
+      if (!fs.existsSync(filePath)) {
+        this.logger.warn(`Product image not found on disk: ${filePath}`);
+        continue;
+      }
+
+      try {
+        const caption = `${product.name} — ${Number(product.price).toFixed(2)} ₽`;
+        await client.sendFile(message.chatId ?? message.peerId, {
+          file: filePath,
+          caption,
+        });
+        sentCount++;
+      } catch (err) {
+        this.logger.warn(`Failed to send product photo for ${product.name}`, err);
+      }
+    }
+
+    if (sentCount > 0) {
+      this.logger.log(`Sent ${sentCount} product photo(s) for user ${userId}`);
+    }
   }
 
   async getPeers(userId: string): Promise<TelegramPeer[]> {

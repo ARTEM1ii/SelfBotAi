@@ -1,9 +1,12 @@
+import logging
 from io import BytesIO
 
 from PIL import Image
 from sentence_transformers import SentenceTransformer
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class CLIPService:

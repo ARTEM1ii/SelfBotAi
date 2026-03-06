@@ -1,12 +1,14 @@
+import logging
 from dataclasses import dataclass
 
-from pgvector.sqlalchemy import Vector
-from sqlalchemy import select, text
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.chunk import DocumentChunk
-from app.services.embedding import EmbeddingService
+from app.services.local_embedding import LocalEmbeddingService
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -20,7 +22,7 @@ class RetrievedChunk:
 class RetrievalService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
-        self._embedding_service = EmbeddingService()
+        self._embedding_service = LocalEmbeddingService()
 
     async def similarity_search(
         self,
@@ -29,7 +31,7 @@ class RetrievalService:
         top_k: int | None = None,
     ) -> list[RetrievedChunk]:
         k = top_k or settings.top_k_results
-        query_embedding = await self._embedding_service.embed_query(query)
+        query_embedding = self._embedding_service.embed_text(query)
 
         result = await self._session.execute(
             select(
@@ -86,7 +88,6 @@ class RetrievalService:
 
     async def delete_chunks_by_file(self, file_id: str) -> None:
         await self._session.execute(
-            text("DELETE FROM document_chunks WHERE file_id = :file_id"),
-            {"file_id": file_id},
+            delete(DocumentChunk).where(DocumentChunk.file_id == file_id)
         )
         await self._session.commit()
