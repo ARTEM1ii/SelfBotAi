@@ -11,7 +11,7 @@ class LocalEmbeddingService:
     def _get_model(self) -> SentenceTransformer:
         if self._model is None:
             LocalEmbeddingService._model = SentenceTransformer(
-                "sentence-transformers/all-MiniLM-L6-v2"
+                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
             )
         return self._model
 

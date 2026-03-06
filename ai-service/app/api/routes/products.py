@@ -50,7 +50,8 @@ async def _embed_and_store(
         if image_bytes:
             image_embedding = clip_service.embed_image(image_bytes)
 
-    text_for_embedding = f"{name} {description}".strip()
+    # Repeat name to give it more weight in the embedding vs the long description
+    text_for_embedding = f"{name}. {name}. {description}".strip()
     text_embedding = local_embedding_service.embed_text(text_for_embedding)
 
     await retrieval.store_embeddings(
@@ -165,3 +166,33 @@ async def search_by_text(
         )
         for r in results
     ]
+
+
+class ReembedResponse(BaseModel):
+    updated: int
+
+
+@router.post(
+    "/products/reembed-text",
+    response_model=ReembedResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["Products"],
+)
+async def reembed_all_text(
+    session: AsyncSession = Depends(get_session),
+) -> ReembedResponse:
+    """Re-compute text embeddings for all products using the current model."""
+    retrieval = ProductRetrievalService(session)
+    all_products = await retrieval.get_all()
+    count = 0
+    for product in all_products:
+        text = f"{product.product_name}. {product.product_name}. {product.product_description or ''}".strip()
+        new_embedding = local_embedding_service.embed_text(text)
+        await retrieval.update_text_embedding(
+            product_id=product.product_id,
+            name=product.product_name,
+            description=product.product_description,
+            text_embedding=new_embedding,
+        )
+        count += 1
+    return ReembedResponse(updated=count)

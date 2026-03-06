@@ -67,6 +67,10 @@ class ProductRetrievalService:
             ProductEmbedding.text_embedding, text_embedding, top_k
         )
 
+    async def get_all(self) -> list[ProductEmbedding]:
+        result = await self._session.execute(select(ProductEmbedding))
+        return list(result.scalars().all())
+
     async def store_embeddings(
         self,
         product_id: str,

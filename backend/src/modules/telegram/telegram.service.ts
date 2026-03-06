@@ -477,7 +477,7 @@ export class TelegramService {
       // If no photo results, try text search from caption
       if (caption && !productContext) {
         const products = await this.aiService.searchProductByText(caption);
-        if (products.length > 0 && products[0].similarity > 0.3) {
+        if (products.length > 0 && products[0].similarity > 0.15) {
           const result = await this.formatProductContext(products, 'text');
           productContext = result.context;
           matchedProducts = result.products;
@@ -567,11 +567,34 @@ export class TelegramService {
       if (text && !productContext && !isPhotoReq) {
         const products = await this.aiService.searchProductByText(text);
         this.logger.log(`[SEARCH] text="${text}" → ${products.length} results: ${products.map((p) => `${p.product_name}(${p.similarity.toFixed(2)})`).join(', ')}`);
-        if (products.length > 0 && products[0].similarity > 0.3) {
+        if (products.length > 0 && products[0].similarity > 0.15) {
           const result = await this.formatProductContext(products, 'text');
           productContext = result.context;
           matchedProducts = result.products;
           this.logger.log(`[MATCHED] ${matchedProducts.length} products: ${matchedProducts.map((p) => p.name).join(', ')}`);
+        }
+
+        // Fallback: keyword search in product names when embedding search fails
+        if (!productContext) {
+          const keywordResults = await this.productsService.searchByKeyword(text);
+          if (keywordResults.length > 0) {
+            this.logger.log(`[KEYWORD-FALLBACK] Found ${keywordResults.length} products: ${keywordResults.map((p) => p.name).join(', ')}`);
+            const kwContext = keywordResults.map((p, i) => {
+              const parts = [`${i + 1}. ${p.name}`];
+              if (p.description) parts.push(`   Описание: ${p.description}`);
+              const dimParts: string[] = [];
+              if (p.width) dimParts.push(p.width);
+              if (p.height) dimParts.push(p.height);
+              if (p.depth) dimParts.push(p.depth);
+              if (dimParts.length > 0) parts.push(`   Размеры: ${dimParts.join(' x ')}`);
+              if (p.weight) parts.push(`   Вес: ${p.weight}`);
+              parts.push(`   Цена: ${Number(p.price).toFixed(2)} ₽`);
+              parts.push(`   В наличии: ${p.quantity} шт.`);
+              return parts.join('\n');
+            });
+            productContext = `Система нашла товары по запросу клиента:\n\n${kwContext.join('\n\n')}`;
+            matchedProducts = keywordResults;
+          }
         }
       }
 
@@ -815,13 +838,19 @@ export class TelegramService {
     });
 
     // Keep products where more than half of name-words matched
-    const wellMatched = scored.filter((s) =>
-      s.total > 0 && s.score / s.total > 0.5,
-    );
+    const wellMatched = scored
+      .filter((s) => s.total > 0 && s.score / s.total > 0.5)
+      .sort((a, b) => (b.score / b.total) - (a.score / a.total));
+
     if (wellMatched.length > 0) {
-      return wellMatched
-        .sort((a, b) => (b.score / b.total) - (a.score / a.total))
-        .map((s) => s.product);
+      // If the top product has a significantly better match ratio than the rest,
+      // return only the top one(s) to avoid sending photos of loosely-matching products
+      // (e.g. products sharing material words like "велюр монолит латте").
+      const bestRatio = wellMatched[0].score / wellMatched[0].total;
+      const closeMatches = wellMatched.filter((s) =>
+        bestRatio - s.score / s.total < 0.15,
+      );
+      return closeMatches.map((s) => s.product);
     }
 
     // Also check user message for product category hints

@@ -247,6 +247,41 @@ export class ProductsService {
     return qb.getMany();
   }
 
+  /**
+   * Keyword-based fallback search: finds products whose name contains any
+   * of the significant words from the query (case-insensitive, ILIKE).
+   */
+  async searchByKeyword(query: string, limit: number = 5): Promise<Product[]> {
+    const words = query
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length >= 3);
+    if (words.length === 0) return [];
+
+    // Crude Russian stemming: strip common noun/adj endings to match word roots.
+    // "тумбу"→"тумб", "тумбочку"→"тумбочк", "диваны"→"диван"
+    // Longest suffixes first so regex alternation matches greedily
+    const stems = words.map((w) =>
+      w.replace(/(очку|очка|очек|очки|ками|ями|ами|ого|его|ому|ему|чку|чка|чки|чек|ов|ев|ей|ах|ях|ом|ем|ой|ию|ью|ие|ые|ую|ых|их|ок|ек|ку|ка|ки|ы|у|а|е|и|о|ь|й)$/, '') || w,
+    ).filter((s) => s.length >= 3);
+    if (stems.length === 0) return [];
+
+    const qb = this.productRepo
+      .createQueryBuilder('product')
+      .leftJoinAndSelect('product.images', 'images');
+
+    const conditions = stems.map((_, i) => `LOWER(product.name) LIKE :kw${i}`);
+    const params: Record<string, string> = {};
+    stems.forEach((s, i) => {
+      params[`kw${i}`] = `%${s}%`;
+    });
+
+    qb.where(`(${conditions.join(' OR ')})`, params);
+    qb.take(limit);
+
+    return qb.getMany();
+  }
+
   private async generateEmbeddings(product: Product): Promise<void> {
     const imagePath = product.imagePath
       ? path.join(UPLOADS_DIR, product.imagePath)
