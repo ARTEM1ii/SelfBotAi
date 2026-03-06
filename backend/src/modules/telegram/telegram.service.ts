@@ -559,22 +559,26 @@ export class TelegramService {
 
       const peerKey = `${userId}:${peerId}`;
       const isPhotoReq = text ? this.isPhotoRequest(text) : false;
+      this.logger.log(`[MSG] text="${text}", isPhotoReq=${isPhotoReq}, hasPhoto=${hasPhoto}`);
 
       // Handle text: search products by text if no photo results yet.
       // Skip text search when the message is just a photo request (e.g. "можно фото")
       // — in that case reuse the products from the previous turn.
       if (text && !productContext && !isPhotoReq) {
         const products = await this.aiService.searchProductByText(text);
+        this.logger.log(`[SEARCH] text="${text}" → ${products.length} results: ${products.map((p) => `${p.product_name}(${p.similarity.toFixed(2)})`).join(', ')}`);
         if (products.length > 0 && products[0].similarity > 0.3) {
           const result = await this.formatProductContext(products, 'text');
           productContext = result.context;
           matchedProducts = result.products;
+          this.logger.log(`[MATCHED] ${matchedProducts.length} products: ${matchedProducts.map((p) => p.name).join(', ')}`);
         }
       }
 
       // For photo requests, use previously matched products for context and photo sending
       if (isPhotoReq && matchedProducts.length === 0) {
         const previousProducts = this.lastMatchedProducts.get(peerKey);
+        this.logger.log(`[PHOTO-REQ] lastMatchedProducts: ${previousProducts?.map((p) => p.name).join(', ') ?? 'none'}`);
         if (previousProducts && previousProducts.length > 0) {
           matchedProducts = previousProducts;
           const result = await this.formatProductContext(
@@ -750,8 +754,13 @@ export class TelegramService {
 
     // Remember matched products for this peer (so follow-up "скинь фото" works)
     // Only update when the user message is NOT just a photo request (e.g. "фото", "скинь фото")
+    // Filter to only products actually mentioned in the LLM reply, so that
+    // a follow-up "можно фото" sends the correct product (not a previously discussed one).
     if (matchedProducts && matchedProducts.length > 0 && !this.isPhotoRequest(userMessage)) {
-      this.lastMatchedProducts.set(peerKey, matchedProducts);
+      const relevantToReply = this.filterRelevantProducts(userMessage, reply, matchedProducts);
+      const toRemember = relevantToReply.length > 0 ? relevantToReply : matchedProducts;
+      this.logger.log(`[REMEMBER] Saving ${toRemember.length} products for ${peerKey}: ${toRemember.map((p) => p.name).join(', ')}`);
+      this.lastMatchedProducts.set(peerKey, toRemember);
     }
 
     // Send product photos only when the client asked for photos
@@ -760,13 +769,14 @@ export class TelegramService {
       const products = (matchedProducts && matchedProducts.length > 0)
         ? matchedProducts
         : this.lastMatchedProducts.get(peerKey);
-
-      // If there are few products (1-2), send them directly without filtering
-      // (filtering by LLM reply words can incorrectly exclude the right product)
-      const relevantProducts = (products && products.length <= 2)
-        ? products
-        : this.filterRelevantProducts(userMessage, reply, products);
-      await this.sendProductPhotos(userId, message, relevantProducts ?? []);
+      this.logger.log(
+        `Photo request: ${products?.length ?? 0} candidate products: ${products?.map((p) => p.name).join(', ')}`,
+      );
+      const relevantProducts = this.filterRelevantProducts(userMessage, reply, products);
+      this.logger.log(
+        `Filtered to ${relevantProducts.length} products: ${relevantProducts.map((p) => p.name).join(', ')}`,
+      );
+      await this.sendProductPhotos(userId, message, relevantProducts);
     }
   }
 
@@ -776,31 +786,31 @@ export class TelegramService {
     return this.photoRequestPattern.test(text);
   }
 
-  /**
-   * Check if a word from text matches a reference word by shared stem (first N chars).
-   */
-  private stemMatch(word: string, reference: string): boolean {
-    const minLen = Math.min(word.length, reference.length, 4);
-    if (minLen < 3) return false;
-    return word.substring(0, minLen) === reference.substring(0, minLen);
-  }
-
   private filterRelevantProducts(
     userMessage: string,
     reply: string,
     products?: Product[],
   ): Product[] {
     if (!products || products.length === 0) return [];
+    if (products.length === 1) return products;
 
     const replyLower = reply.toLowerCase();
-    const replyWords = replyLower.split(/[\s,."!?()—–\-:;]+/).filter((w) => w.length >= 3);
 
-    // Score each product by how many name-words appear in the LLM reply (stem match)
+    // Score each product by checking if its name (or significant part) appears in the LLM reply
     const scored = products.map((p) => {
-      const nameWords = p.name.toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
+      const nameLower = p.name.toLowerCase();
+      const nameWords = nameLower.split(/\s+/).filter((w) => w.length >= 3);
+
+      // Check if the full product name is mentioned in reply
+      if (replyLower.includes(nameLower)) {
+        return { product: p, score: nameWords.length, total: nameWords.length };
+      }
+
+      // Check how many significant name words appear in the reply (substring match)
       const matchCount = nameWords.filter((nw) =>
-        replyWords.some((rw) => this.stemMatch(rw, nw)),
+        replyLower.includes(nw),
       ).length;
+
       return { product: p, score: matchCount, total: nameWords.length };
     });
 
@@ -814,18 +824,16 @@ export class TelegramService {
         .map((s) => s.product);
     }
 
-    // Fallback: match by category (first word) in reply
-    const byCategory = scored.filter((s) => {
-      const category = s.product.name.toLowerCase().split(/\s+/)[0];
+    // Also check user message for product category hints
+    const userLower = userMessage.toLowerCase();
+    const byUserMessage = products.filter((p) => {
+      const category = p.name.toLowerCase().split(/\s+/)[0];
       if (!category || category.length < 3) return false;
-      return replyWords.some((rw) => this.stemMatch(rw, category));
+      return userLower.includes(category);
     });
-    if (byCategory.length > 0) return byCategory.map((s) => s.product);
+    if (byUserMessage.length > 0) return byUserMessage;
 
-    // If only one product — safe to return it
-    if (products.length === 1) return products;
-
-    // Multiple products and no match — don't send all
+    // Multiple products and no match — don't send all, avoid wrong photos
     return [];
   }
 
@@ -864,6 +872,7 @@ export class TelegramService {
 
       try {
         const caption = `${product.name} — ${Number(product.price).toFixed(2)} ₽`;
+        this.logger.log(`[SEND-PHOTO] Sending "${product.name}" file=${filename}`);
         await client.sendFile(message.chatId ?? message.peerId, {
           file: filePath,
           caption,
