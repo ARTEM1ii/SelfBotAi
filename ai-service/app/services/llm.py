@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 
@@ -7,6 +8,64 @@ from app.core.config import settings
 from app.services.retrieval import RetrievedChunk
 
 logger = logging.getLogger(__name__)
+
+CART_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "add_to_cart",
+            "description": "Add a product to the customer's cart. Use when the customer wants to buy something.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_name": {
+                        "type": "string",
+                        "description": "The exact name of the product from the catalog",
+                    },
+                    "quantity": {
+                        "type": "integer",
+                        "description": "Quantity to add",
+                        "default": 1,
+                    },
+                },
+                "required": ["product_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "remove_from_cart",
+            "description": "Remove a product from the customer's cart.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_name": {
+                        "type": "string",
+                        "description": "The name of the product to remove",
+                    },
+                },
+                "required": ["product_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_cart",
+            "description": "Show the current contents of the customer's cart.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "confirm_order",
+            "description": "Confirm and place the order from the customer's cart. Use when the customer explicitly confirms they want to order.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+]
 
 
 class LLMService:
@@ -52,7 +111,9 @@ class LLMService:
         context_chunks: list[RetrievedChunk],
         conversation_history: list[dict[str, str]] | None = None,
         product_context: str | None = None,
-    ) -> str:
+        cart_context: str | None = None,
+    ) -> dict:
+        """Returns {"reply": str, "tool_calls": list[dict] | None}"""
         interlocutor_facts = self._extract_interlocutor_facts(
             conversation_history, message
         )
@@ -60,9 +121,32 @@ class LLMService:
         messages = self._build_messages(
             message, context, conversation_history, interlocutor_facts,
             product_context=product_context,
+            cart_context=cart_context,
         )
 
-        response_text = await self._call_llm(messages)
+        response = await self._call_llm_raw(messages)
+        choice = response.choices[0]
+
+        logger.info("LLM finish_reason=%s, tool_calls=%s, content=%s",
+                     choice.finish_reason,
+                     choice.message.tool_calls,
+                     (choice.message.content or "")[:100])
+
+        # If the model wants to call tools, return them for backend to execute
+        if choice.message.tool_calls:
+            tool_calls = [
+                {
+                    "name": tc.function.name,
+                    "arguments": json.loads(tc.function.arguments),
+                }
+                for tc in choice.message.tool_calls
+            ]
+
+            # Build a follow-up to get a text reply after tool execution
+            # The backend will execute tools, then call us again with results
+            return {"reply": choice.message.content or "", "tool_calls": tool_calls}
+
+        response_text = choice.message.content or ""
 
         # If the model broke character, retry once with a stronger nudge
         if self._AI_PATTERNS.search(response_text):
@@ -80,22 +164,47 @@ class LLMService:
                 "role": "user",
                 "content": message,
             })
-            response_text = await self._call_llm(messages)
+            resp2 = await self._call_llm_raw(messages)
+            response_text = resp2.choices[0].message.content or ""
 
-        return response_text
+        return {"reply": response_text, "tool_calls": None}
 
-    async def _call_llm(self, messages: list[dict[str, str]]) -> str:
+    async def _call_llm_raw(self, messages: list[dict[str, str]], use_tools: bool = True):
         try:
-            response = await self._client.chat.completions.create(
-                model=settings.openai_chat_model,
-                messages=messages,  # type: ignore[arg-type]
-                temperature=0.7,
-                max_tokens=512,
-            )
-            return response.choices[0].message.content or ""
+            kwargs: dict = {
+                "model": settings.openai_chat_model,
+                "messages": messages,
+                "temperature": 0.7,
+                "max_tokens": 512,
+            }
+            if use_tools:
+                kwargs["tools"] = CART_TOOLS
+                kwargs["tool_choice"] = "auto"
+            response = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+            return response
         except Exception as e:
             logger.error("LLM API call failed: %s", e)
             raise
+
+    async def generate_response_with_tool_results(
+        self,
+        messages: list[dict],
+        tool_results: list[dict],
+    ) -> str:
+        """Second LLM call after tool execution — get final text reply."""
+        for tr in tool_results:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tr["tool_call_id"],
+                "content": tr["content"],
+            })
+
+        response = await self._call_llm_raw(messages)
+        return response.choices[0].message.content or ""
+
+    async def _call_llm(self, messages: list[dict[str, str]]) -> str:
+        resp = await self._call_llm_raw(messages)
+        return resp.choices[0].message.content or ""
 
     def _build_context(self, chunks: list[RetrievedChunk]) -> str:
         if not chunks:
@@ -112,6 +221,7 @@ class LLMService:
         history: list[dict[str, str]] | None,
         interlocutor_facts: dict[str, str],
         product_context: str | None = None,
+        cart_context: str | None = None,
     ) -> list[dict[str, str]]:
         # System prompt: professional sales consultant (compact)
         system_content = (
@@ -124,7 +234,14 @@ class LLMService:
             "Если такого раздела нет или в нём нет подходящего товара — НЕ выдумывай названия, цены и характеристики. "
             "Если система искала и не нашла — честно скажи что таких товаров сейчас нет в наличии.\n"
             "Если система нашла альтернативные товары — предложи их клиенту как варианты.\n"
-            "Заказы не оформляешь — предлагай связаться с менеджером.\n"
+            "Ты МОЖЕШЬ оформлять заказы через корзину. "
+            "Когда клиент хочет купить товар — используй функцию add_to_cart с ТОЧНЫМ названием товара из каталога. "
+            "Когда клиент просит показать корзину — используй get_cart. "
+            "Когда клиент хочет убрать товар — используй remove_from_cart. "
+            "Когда клиент подтверждает заказ (говорит «да», «оформи», «подтверди», «заказываю», «давай», «ок», «конечно», «угу» и любые другие утвердительные ответы на вопрос о подтверждении) — ОБЯЗАТЕЛЬНО вызови функцию confirm_order. "
+            "ВАЖНО: Если в корзине есть товары и ты спросил 'Подтвердить заказ?' а клиент ответил 'Да' или любое согласие — ты ДОЛЖЕН вызвать confirm_order, а НЕ просто написать текст 'Подтверждаю заказ'. "
+            "Текстовый ответ 'Подтверждаю заказ' без вызова confirm_order — это ОШИБКА, заказ не будет оформлен. "
+            "НЕ вызывай confirm_order без явного подтверждения клиента.\n"
             "Если не знаешь ответ — скажи что уточнишь.\n"
             "Ты МОЖЕШЬ отправлять фотографии товаров — они прикрепляются автоматически. "
             "Когда клиент ЯВНО просит фото и есть найденные товары — скажи коротко что отправляешь и ОБЯЗАТЕЛЬНО укажи название товара. "
@@ -175,6 +292,13 @@ class LLMService:
                     "Честно скажи клиенту что к сожалению таких товаров сейчас нет в наличии. "
                     "Можешь предложить связаться с менеджером для индивидуального подбора."
                 ),
+            })
+
+        # Cart context
+        if cart_context:
+            messages.append({
+                "role": "system",
+                "content": f"Текущая корзина клиента:\n{cart_context}",
             })
 
         # Conversation history

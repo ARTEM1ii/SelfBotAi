@@ -31,11 +31,18 @@ interface AiChatPayload {
   conversation_history?: Array<{ role: string; content: string }>;
   top_k?: number;
   product_context?: string;
+  cart_context?: string;
+}
+
+interface AiToolCall {
+  name: string;
+  arguments: Record<string, any>;
 }
 
 interface AiChatResponse {
   reply: string;
   sources_count: number;
+  tool_calls?: AiToolCall[] | null;
 }
 
 interface ProductSearchResult {
@@ -140,6 +147,7 @@ export class AiService {
       top_k: dto.topK,
       conversation_history: conversationHistory,
       product_context: dto.productContext,
+      cart_context: dto.cartContext,
     };
 
     try {
@@ -156,6 +164,8 @@ export class AiService {
 
       const data = await response.json() as AiChatResponse;
 
+      this.logger.log(`AI response: reply="${(data.reply || '').substring(0, 80)}", tool_calls=${JSON.stringify(data.tool_calls)}`);
+
       // Only save to chat_history when it's a dashboard chat (externalHistory not provided)
       if (externalHistory === undefined) {
         await this.chatHistoryRepo.save([
@@ -167,6 +177,7 @@ export class AiService {
       return {
         reply: data.reply,
         sourcesCount: data.sources_count,
+        toolCalls: data.tool_calls ?? undefined,
       };
     } catch (error) {
       this.logger.error('Failed to get chat response from AI service', error);

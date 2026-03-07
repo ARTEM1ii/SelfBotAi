@@ -79,6 +79,33 @@ export interface Product {
   updatedAt: string;
 }
 
+export enum OrderStatus {
+  PENDING = 'pending',
+  CONFIRMED = 'confirmed',
+  COMPLETED = 'completed',
+  CANCELLED = 'cancelled',
+}
+
+export interface OrderItem {
+  id: string;
+  productId: string;
+  productName: string;
+  price: number;
+  quantity: number;
+}
+
+export interface Order {
+  id: string;
+  peerId: string;
+  peerName: string | null;
+  peerUsername: string | null;
+  status: OrderStatus;
+  totalPrice: number;
+  items: OrderItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;

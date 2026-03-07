@@ -7,9 +7,10 @@ import { TelegramService } from './telegram.service';
 import { TelegramController } from './telegram.controller';
 import { AiModule } from '../ai/ai.module';
 import { ProductsModule } from '../products/products.module';
+import { OrdersModule } from '../orders/orders.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([TelegramSession, TelegramConversation, TelegramPeer]), AiModule, ProductsModule],
+  imports: [TypeOrmModule.forFeature([TelegramSession, TelegramConversation, TelegramPeer]), AiModule, ProductsModule, OrdersModule],
   controllers: [TelegramController],
   providers: [TelegramService],
   exports: [TelegramService],

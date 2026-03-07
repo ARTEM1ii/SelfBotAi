@@ -44,6 +44,16 @@ export class ChatDto {
   @IsOptional()
   @IsString()
   readonly productContext?: string;
+
+  @ApiPropertyOptional({ description: 'Current cart contents for the customer' })
+  @IsOptional()
+  @IsString()
+  readonly cartContext?: string;
+}
+
+export class ToolCallDto {
+  readonly name: string;
+  readonly arguments: Record<string, any>;
 }
 
 export class ChatResponseDto {
@@ -52,4 +62,7 @@ export class ChatResponseDto {
 
   @ApiProperty({ example: 3 })
   readonly sourcesCount: number;
+
+  @ApiPropertyOptional({ type: [ToolCallDto] })
+  readonly toolCalls?: ToolCallDto[] | null;
 }

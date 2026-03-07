@@ -21,6 +21,7 @@ import {
   UserOutlined,
   TeamOutlined,
   ShoppingOutlined,
+  ShoppingCartOutlined,
 } from '@ant-design/icons';
 import { authApi, removeToken, getToken } from '@/lib/auth';
 import { User } from '@/types';
@@ -34,6 +35,7 @@ const NAV_ITEMS = [
   { key: '/dashboard/chat', icon: <MessageOutlined />, label: 'Chat' },
   { key: '/dashboard/conversations', icon: <TeamOutlined />, label: 'Conversations' },
   { key: '/dashboard/products', icon: <ShoppingOutlined />, label: 'Products' },
+  { key: '/dashboard/orders', icon: <ShoppingCartOutlined />, label: 'Orders' },
   { key: '/dashboard/telegram', icon: <SendOutlined />, label: 'Telegram' },
 ];
 

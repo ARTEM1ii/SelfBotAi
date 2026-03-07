@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { Repository } from 'typeorm';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions';
@@ -18,7 +19,10 @@ import { TelegramConversation } from './entities/telegram-conversation.entity';
 import { TelegramPeer } from './entities/telegram-peer.entity';
 import { AiService } from '../ai/ai.service';
 import { ProductsService } from '../products/products.service';
+import { OrdersService } from '../orders/orders.service';
 import { Product } from '../products/entities/product.entity';
+import { Order } from '../orders/entities/order.entity';
+import bigInt from 'big-integer';
 import * as path from 'path';
 import * as fs from 'fs';
 import {
@@ -50,6 +54,8 @@ export class TelegramService {
     private readonly peerRepository: Repository<TelegramPeer>,
     private readonly aiService: AiService,
     private readonly productsService: ProductsService,
+    private readonly ordersService: OrdersService,
+    private readonly configService: ConfigService,
   ) {}
 
   async saveCredentials(
@@ -493,11 +499,33 @@ export class TelegramService {
         userMessage = `Клиент отправил ${events.length} фотографий, но похожих товаров не найдено.`;
       }
 
-      const { reply } = await this.aiService.chat(userId, {
+      const cartContext = await this.buildCartContext(userId, peerId);
+
+      const aiResponse = await this.aiService.chat(userId, {
         message: userMessage,
         conversationHistory: history,
         productContext,
+        cartContext,
       });
+
+      let reply = aiResponse.reply;
+
+      if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
+        const { results, order } = await this.handleToolCalls(
+          userId, peerId, peerName, peerUsername, aiResponse.toolCalls,
+        );
+        const updatedCartContext = await this.buildCartContext(userId, peerId);
+        const followUp = await this.aiService.chat(userId, {
+          message: `[Результаты операций]\n${results.join('\n')}\n\n[Исходное сообщение клиента]: ${userMessage}`,
+          conversationHistory: history,
+          productContext,
+          cartContext: updatedCartContext,
+        });
+        reply = followUp.reply;
+        if (order) {
+          await this.sendReceiptToManager(userId, order);
+        }
+      }
 
       await this.persistAndReply(userId, peerId, userMessage, reply, peerName, peerUsername, lastMessage, matchedProducts);
     } catch (error) {
@@ -687,11 +715,41 @@ export class TelegramService {
         userMessage = 'Клиент отправил фотографию, но похожих товаров не найдено.';
       }
 
-      const { reply } = await this.aiService.chat(userId, {
+      // Build cart context for LLM
+      const cartContext = await this.buildCartContext(userId, peerId);
+
+      const aiResponse = await this.aiService.chat(userId, {
         message: userMessage,
         conversationHistory: history,
         productContext,
+        cartContext,
       });
+
+      let reply = aiResponse.reply;
+
+      // Handle tool calls from LLM
+      if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
+        const { results, order } = await this.handleToolCalls(
+          userId, peerId, peerName, peerUsername, aiResponse.toolCalls,
+        );
+
+        // Get updated cart context after tool execution
+        const updatedCartContext = await this.buildCartContext(userId, peerId);
+
+        // Call AI again with tool results for final text reply
+        const followUp = await this.aiService.chat(userId, {
+          message: `[Результаты операций]\n${results.join('\n')}\n\n[Исходное сообщение клиента]: ${userMessage}`,
+          conversationHistory: history,
+          productContext,
+          cartContext: updatedCartContext,
+        });
+        reply = followUp.reply;
+
+        // Send receipt to manager if order was confirmed
+        if (order) {
+          await this.sendReceiptToManager(userId, order);
+        }
+      }
 
       await this.persistAndReply(userId, peerId, userMessage, reply, peerName, peerUsername, message, matchedProducts);
     } catch (error) {
@@ -914,6 +972,158 @@ export class TelegramService {
 
     if (sentCount > 0) {
       this.logger.log(`Sent ${sentCount} product photo(s) for user ${userId}`);
+    }
+  }
+
+  private async buildCartContext(userId: string, peerId: string): Promise<string | undefined> {
+    const cart = await this.ordersService.getCart(userId, peerId);
+    if (cart.length === 0) return undefined;
+
+    let total = 0;
+    const lines = cart.map((ci, i) => {
+      const lineTotal = Number(ci.product.price) * ci.quantity;
+      total += lineTotal;
+      return `${i + 1}. ${ci.product.name} x ${ci.quantity} — ${lineTotal.toFixed(2)} ₽`;
+    });
+    lines.push(`\nИтого: ${total.toFixed(2)} ₽`);
+    return lines.join('\n');
+  }
+
+  private async handleToolCalls(
+    userId: string,
+    peerId: string,
+    peerName: string | null,
+    peerUsername: string | null,
+    toolCalls: Array<{ name: string; arguments: Record<string, any> }>,
+  ): Promise<{ results: string[]; order?: Order }> {
+    const results: string[] = [];
+    let order: Order | undefined;
+
+    for (const tc of toolCalls) {
+      try {
+        switch (tc.name) {
+          case 'add_to_cart': {
+            const productName = tc.arguments.product_name;
+            const qty = tc.arguments.quantity ?? 1;
+            const product = await this.ordersService.findProductByName(userId, productName);
+            if (product) {
+              await this.ordersService.addToCart(userId, peerId, product.id, qty);
+              results.push(`Добавлено в корзину: ${product.name} x ${qty}`);
+            } else {
+              results.push(`Товар "${productName}" не найден в каталоге`);
+            }
+            break;
+          }
+          case 'remove_from_cart': {
+            const productName = tc.arguments.product_name;
+            const product = await this.ordersService.findProductByName(userId, productName);
+            if (product) {
+              await this.ordersService.removeFromCart(userId, peerId, product.id);
+              results.push(`Удалено из корзины: ${product.name}`);
+            } else {
+              results.push(`Товар "${productName}" не найден`);
+            }
+            break;
+          }
+          case 'get_cart': {
+            const cartContext = await this.buildCartContext(userId, peerId);
+            results.push(cartContext ?? 'Корзина пуста');
+            break;
+          }
+          case 'confirm_order': {
+            try {
+              order = await this.ordersService.confirmOrder(userId, peerId, peerName, peerUsername);
+              const itemLines = order.items.map(
+                (it, i) => `${i + 1}. ${it.productName} x ${it.quantity} — ${(Number(it.price) * it.quantity).toFixed(2)} ₽`,
+              );
+              results.push(
+                `Заказ #${order.id.slice(0, 8)} оформлен!\n${itemLines.join('\n')}\nИтого: ${Number(order.totalPrice).toFixed(2)} ₽`,
+              );
+            } catch {
+              results.push('Корзина пуста, нечего оформлять');
+            }
+            break;
+          }
+          default:
+            results.push(`Неизвестная функция: ${tc.name}`);
+        }
+      } catch (err) {
+        this.logger.error(`Tool call ${tc.name} failed`, err);
+        results.push(`Ошибка при выполнении ${tc.name}`);
+      }
+    }
+
+    return { results, order };
+  }
+
+  private async sendReceiptToManager(userId: string, order: Order): Promise<void> {
+    const managerPhone = this.configService.get<string>('app.managerPhone') || process.env.MANAGER_PHONE;
+    if (!managerPhone) {
+      this.logger.warn('MANAGER_PHONE not configured, skipping receipt');
+      return;
+    }
+
+    const client = this.clients.get(userId);
+    if (!client) {
+      this.logger.warn('No Telegram client for user, cannot send receipt');
+      return;
+    }
+
+    this.logger.log(`Sending receipt to manager phone: ${managerPhone}`);
+
+    try {
+      // Import the phone as a contact first so we can resolve it
+      const importResult = await client.invoke(
+        new Api.contacts.ImportContacts({
+          contacts: [
+            new Api.InputPhoneContact({
+              clientId: bigInt(0),
+              phone: managerPhone,
+              firstName: 'Manager',
+              lastName: '',
+            }),
+          ],
+        }),
+      );
+
+      let entity: Api.TypeInputPeer;
+      if (importResult.users && importResult.users.length > 0) {
+        const user = importResult.users[0];
+        entity = new Api.InputPeerUser({
+          userId: (user as Api.User).id,
+          accessHash: (user as Api.User).accessHash ?? bigInt(0),
+        });
+      } else {
+        // Fallback: try getEntity directly (works if already in contacts)
+        this.logger.log('ImportContacts returned no users, trying getEntity fallback');
+        entity = await client.getInputEntity(managerPhone);
+      }
+
+      const clientDisplay = order.peerName
+        ? `${order.peerName}${order.peerUsername ? ` (@${order.peerUsername})` : ''}`
+        : order.peerUsername
+          ? `@${order.peerUsername}`
+          : `Peer ${order.peerId}`;
+
+      const itemLines = order.items.map(
+        (it, i) => `${i + 1}. ${it.productName} × ${it.quantity} — ${(Number(it.price) * it.quantity).toFixed(2)} ₽`,
+      );
+
+      const receipt =
+        `📋 Новый заказ #${order.id.slice(0, 8)}\n\n` +
+        `Клиент: ${clientDisplay}\n\n` +
+        `${itemLines.join('\n')}\n\n` +
+        `Итого: ${Number(order.totalPrice).toFixed(2)} ₽`;
+
+      await client.invoke(
+        new Api.messages.SendMessage({
+          peer: entity,
+          message: receipt,
+        }),
+      );
+      this.logger.log(`Receipt sent to manager for order ${order.id}`);
+    } catch (err) {
+      this.logger.error(`Failed to send receipt to manager`, err);
     }
   }
 

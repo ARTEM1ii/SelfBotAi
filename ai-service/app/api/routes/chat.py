@@ -1,5 +1,5 @@
 import logging
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -25,11 +25,18 @@ class ChatRequest(BaseModel):
     conversation_history: list[ConversationMessage] | None = None
     top_k: int | None = None
     product_context: str | None = None
+    cart_context: str | None = None
+
+
+class ToolCall(BaseModel):
+    name: str
+    arguments: dict[str, Any]
 
 
 class ChatResponse(BaseModel):
     reply: str
     sources_count: int
+    tool_calls: list[ToolCall] | None = None
 
 
 @router.post(
@@ -64,11 +71,12 @@ async def chat(
     )
 
     try:
-        reply = await llm_service.generate_response(
+        result = await llm_service.generate_response(
             message=request.message,
             context_chunks=chunks,
             conversation_history=history,
             product_context=request.product_context,
+            cart_context=request.cart_context,
         )
     except Exception as e:
         raise HTTPException(
@@ -76,4 +84,12 @@ async def chat(
             detail=f"LLM generation failed: {str(e)}",
         )
 
-    return ChatResponse(reply=reply, sources_count=len(chunks))
+    tool_calls = None
+    if result.get("tool_calls"):
+        tool_calls = [ToolCall(**tc) for tc in result["tool_calls"]]
+
+    return ChatResponse(
+        reply=result["reply"],
+        sources_count=len(chunks),
+        tool_calls=tool_calls,
+    )
