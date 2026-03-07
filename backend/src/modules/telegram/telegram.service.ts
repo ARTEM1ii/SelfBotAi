@@ -509,10 +509,28 @@ export class TelegramService {
       });
 
       let reply = aiResponse.reply;
+      let toolCalls = aiResponse.toolCalls;
 
-      if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
+      // Fallback: same as handleSingleMessage
+      if ((!toolCalls || toolCalls.length === 0) && reply) {
+        const replyLower = reply.toLowerCase();
+        const hasCart = cartContext && cartContext.length > 0;
+        if (/добавля\w* в корзину|добавлен[оа]? в корзину/.test(replyLower) && matchedProducts && matchedProducts.length > 0) {
+          for (const p of matchedProducts) {
+            if (replyLower.includes(p.name.toLowerCase())) {
+              toolCalls = [{ name: 'add_to_cart', arguments: { product_name: p.name } }];
+              break;
+            }
+          }
+        }
+        if (/подтвержда\w* заказ|заказ подтвержд|заказ оформлен|оформля\w* заказ/.test(replyLower) && hasCart) {
+          toolCalls = [{ name: 'confirm_order', arguments: {} }];
+        }
+      }
+
+      if (toolCalls && toolCalls.length > 0) {
         const { results, order } = await this.handleToolCalls(
-          userId, peerId, peerName, peerUsername, aiResponse.toolCalls,
+          userId, peerId, peerName, peerUsername, toolCalls,
         );
         const updatedCartContext = await this.buildCartContext(userId, peerId);
         const followUp = await this.aiService.chat(userId, {
@@ -726,17 +744,41 @@ export class TelegramService {
       });
 
       let reply = aiResponse.reply;
+      let toolCalls = aiResponse.toolCalls;
 
-      // Handle tool calls from LLM
-      if (aiResponse.toolCalls && aiResponse.toolCalls.length > 0) {
+      // Fallback: detect when LLM writes cart actions as text without calling tools
+      if ((!toolCalls || toolCalls.length === 0) && reply) {
+        const replyLower = reply.toLowerCase();
+        const hasCart = cartContext && cartContext.length > 0;
+
+        // Detect "добавляю в корзину [товар]" without tool call
+        if (/добавля\w* в корзину|добавлен[оа]? в корзину/.test(replyLower) && matchedProducts && matchedProducts.length > 0) {
+          for (const p of matchedProducts) {
+            if (replyLower.includes(p.name.toLowerCase()) || replyLower.includes(p.name.split(' ').slice(0, 2).join(' ').toLowerCase())) {
+              this.logger.log(`[FALLBACK] LLM said "добавляю" without tool call, auto-adding: ${p.name}`);
+              toolCalls = [{ name: 'add_to_cart', arguments: { product_name: p.name } }];
+              break;
+            }
+          }
+        }
+
+        // Detect "подтверждаю заказ" / "заказ подтвержден" / "заказ оформлен" without tool call
+        if (/подтвержда\w* заказ|заказ подтвержд|заказ оформлен|оформля\w* заказ/.test(replyLower) && hasCart) {
+          this.logger.log(`[FALLBACK] LLM said "подтверждаю заказ" without tool call, auto-confirming`);
+          toolCalls = [{ name: 'confirm_order', arguments: {} }];
+        }
+      }
+
+      // Handle tool calls from LLM (or fallback)
+      if (toolCalls && toolCalls.length > 0) {
         const { results, order } = await this.handleToolCalls(
-          userId, peerId, peerName, peerUsername, aiResponse.toolCalls,
+          userId, peerId, peerName, peerUsername, toolCalls,
         );
 
         // Get updated cart context after tool execution
         const updatedCartContext = await this.buildCartContext(userId, peerId);
 
-        // Call AI again with tool results for final text reply
+        // Call AI again with tool results for final text reply (without tools to prevent loops)
         const followUp = await this.aiService.chat(userId, {
           message: `[Результаты операций]\n${results.join('\n')}\n\n[Исходное сообщение клиента]: ${userMessage}`,
           conversationHistory: history,
@@ -1144,6 +1186,7 @@ export class TelegramService {
 
   async clearPeerHistory(userId: string, peerId: string): Promise<void> {
     await this.conversationRepository.delete({ userId, peerId });
+    await this.ordersService.clearCart(userId, peerId);
   }
 
   async deletePeer(userId: string, peerId: string): Promise<void> {
