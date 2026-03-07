@@ -36,6 +36,7 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [peerFilter, setPeerFilter] = useState('');
+  const [messageApi, contextHolder] = message.useMessage();
 
   const fetchOrders = useCallback(async () => {
     try {
@@ -44,11 +45,11 @@ export default function OrdersPage() {
       const { data } = await api.get<Order[]>('/orders', { params });
       setOrders(data);
     } catch {
-      message.error('Failed to load orders');
+      messageApi.error('Failed to load orders');
     } finally {
       setLoading(false);
     }
-  }, [peerFilter]);
+  }, [peerFilter, messageApi]);
 
   useEffect(() => {
     fetchOrders();
@@ -60,9 +61,9 @@ export default function OrdersPage() {
       setOrders((prev) =>
         prev.map((o) => (o.id === orderId ? { ...o, status } : o)),
       );
-      message.success('Status updated');
+      messageApi.success('Status updated');
     } catch {
-      message.error('Failed to update status');
+      messageApi.error('Failed to update status');
     }
   };
 
@@ -80,7 +81,7 @@ export default function OrdersPage() {
         prev.map((o) => (o.id === orderId ? data : o)),
       );
     } catch {
-      message.error('Failed to update quantity');
+      messageApi.error('Failed to update quantity');
     }
   };
 
@@ -186,6 +187,7 @@ export default function OrdersPage() {
 
   return (
     <DashboardLayout>
+      {contextHolder}
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Title level={3} style={{ margin: 0 }}>Orders</Title>
         <Search

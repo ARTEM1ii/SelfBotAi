@@ -127,8 +127,23 @@ export class OrdersService {
 
   async updateOrderStatus(id: string, status: OrderStatus): Promise<Order> {
     const order = await this.getOrder(id);
+    const previousStatus = order.status;
     order.status = status;
-    return this.orderRepo.save(order);
+
+    const saved = await this.orderRepo.save(order);
+
+    // When order is marked as COMPLETED for the first time, decrement product stock
+    if (previousStatus !== OrderStatus.COMPLETED && status === OrderStatus.COMPLETED) {
+      for (const item of order.items) {
+        const product = await this.productRepo.findOne({ where: { id: item.productId } });
+        if (!product) continue;
+        const nextQty = (product.quantity ?? 0) - item.quantity;
+        product.quantity = nextQty < 0 ? 0 : nextQty;
+        await this.productRepo.save(product);
+      }
+    }
+
+    return saved;
   }
 
   async updateOrderItemQuantity(
