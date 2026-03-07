@@ -511,8 +511,10 @@ export class TelegramService {
       let reply = aiResponse.reply;
       let toolCalls = aiResponse.toolCalls;
 
-      // Fallback: same as handleSingleMessage
-      if ((!toolCalls || toolCalls.length === 0) && reply) {
+      // Fallback: same as handleSingleMessage.
+      // Срабатывает только на утвердительные фразы без вопросительного знака,
+      // чтобы не выполнять действия пока ассистент только предлагает "Добавить в корзину?".
+      if ((!toolCalls || toolCalls.length === 0) && reply && !reply.includes('?')) {
         const replyLower = reply.toLowerCase();
         const hasCart = cartContext && cartContext.length > 0;
         if (/добавля\w* в корзину|добавлен[оа]? в корзину/.test(replyLower) && matchedProducts && matchedProducts.length > 0) {
@@ -746,8 +748,10 @@ export class TelegramService {
       let reply = aiResponse.reply;
       let toolCalls = aiResponse.toolCalls;
 
-      // Fallback: detect when LLM writes cart actions as text without calling tools
-      if ((!toolCalls || toolCalls.length === 0) && reply) {
+      // Fallback: detect when LLM writes cart actions as text without calling tools.
+      // ВАЖНО: срабатывает только на утвердительные фразы (без вопросительного знака),
+      // чтобы не добавлять товар на стадии "Добавить в корзину?".
+      if ((!toolCalls || toolCalls.length === 0) && reply && !reply.includes('?')) {
         const replyLower = reply.toLowerCase();
         const hasCart = cartContext && cartContext.length > 0;
 
@@ -1147,13 +1151,24 @@ export class TelegramService {
           ? `@${order.peerUsername}`
           : `Peer ${order.peerId}`;
 
+      const contactLines: string[] = [];
+      contactLines.push(`Клиент: ${clientDisplay}`);
+      // Even if у клиента нет username, менеджеру полезно видеть его Telegram ID
+      contactLines.push(`Telegram ID: ${order.peerId}`);
+      if (order.peerUsername) {
+        contactLines.push(`Username: @${order.peerUsername}`);
+        contactLines.push(`Ссылка на чат: tg://user?id=${order.peerId}`);
+      } else {
+        contactLines.push(`Ссылка на чат: tg://user?id=${order.peerId}`);
+      }
+
       const itemLines = order.items.map(
         (it, i) => `${i + 1}. ${it.productName} × ${it.quantity} — ${(Number(it.price) * it.quantity).toFixed(2)} ₽`,
       );
 
       const receipt =
         `📋 Новый заказ #${order.id.slice(0, 8)}\n\n` +
-        `Клиент: ${clientDisplay}\n\n` +
+        `${contactLines.join('\n')}\n\n` +
         `${itemLines.join('\n')}\n\n` +
         `Итого: ${Number(order.totalPrice).toFixed(2)} ₽`;
 

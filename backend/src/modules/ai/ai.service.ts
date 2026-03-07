@@ -11,6 +11,7 @@ import * as path from 'path';
 import { ChatDto, ChatResponseDto } from './dto/chat.dto';
 import { ChatHistory } from './entities/chat-history.entity';
 import { TelegramConversation } from '../telegram/entities/telegram-conversation.entity';
+import { CartItem } from '../orders/entities/cart-item.entity';
 
 interface ProcessFilePayload {
   file_id: string;
@@ -63,6 +64,8 @@ export class AiService {
     private readonly chatHistoryRepo: Repository<ChatHistory>,
     @InjectRepository(TelegramConversation)
     private readonly telegramConversationRepo: Repository<TelegramConversation>,
+    @InjectRepository(CartItem)
+    private readonly cartItemRepo: Repository<CartItem>,
   ) {
     this.aiServiceUrl =
       this.configService.get<string>('app.aiServiceUrl') ?? 'http://localhost:8000';
@@ -81,6 +84,8 @@ export class AiService {
     // Also clear Telegram conversation history for this user, so the AI
     // doesn't use past Telegram chats as context after "Clear history" in UI.
     await this.telegramConversationRepo.delete({ userId });
+    // And clear all carts for all Telegram peers of this user
+    await this.cartItemRepo.delete({ userId });
   }
 
   async processFile(payload: ProcessFilePayload): Promise<ProcessFileResponse> {
